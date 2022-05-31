@@ -87,6 +87,56 @@ void PersonalizedPageRank::initialize_graph() {
     free(outdegree);
 }
 
+//convert COO in CSR
+void PersonalizedPageRank::converter(){
+    std::vector<int> xPtr;
+    int ptr=0,previousX;
+
+    // Matrix:
+    // 10 20  0  0  0  0
+    //  0 30  0 40  0  0
+    //  0  0 50 60 70  0
+    //  0  0  0  0  0 80
+
+    // coo data:
+    //double coo_val[nnz] = { 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0 };
+    //int    coo_x[nnz] = { 0, 0, 1, 1, 2, 2, 2, 3 };
+    //int    coo_col[nnz] = { 0, 1, 1, 3, 2, 3, 4, 5 };
+
+    // Expected output:
+    // csr_val: 10 20 30 40 50 60 70 80
+    // csr_col:  0  1  1  3  2  3  4  5
+    // csr_x:  0  2  4  7  8
+
+    if(E==0)
+        return;
+    
+    previousX = 0;
+    xPtr.push_back(0);
+
+    for (int i =0; i< E; i++) {
+        
+        while(x[i]!=previousX){
+            xPtr.push_back(ptr);
+            previousX++;
+        }
+        ptr++;
+    }
+    
+    for (int i =0; i< V-x[E-1]; i++) {
+        xPtr.push_back(ptr); 
+    }
+
+
+    //for (int i =0; i< xPtr.size(); i++){
+    //    cout << xPtr[i] << " ";
+    //}
+    
+    x=xPtr;
+
+}
+
+
 //////////////////////////////
 //////////////////////////////
 
@@ -94,6 +144,9 @@ void PersonalizedPageRank::initialize_graph() {
 void PersonalizedPageRank::alloc() {
     // Load the input graph and preprocess it;
     initialize_graph();
+    
+    //convert COO in CSR
+    converter();
 
     // Allocate any GPU data here;
     // TODO!
