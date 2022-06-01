@@ -38,22 +38,29 @@ using clock_type = chrono::high_resolution_clock;
 
 // Write GPU kernel here!
 
-__global__ void gpu_matrix_vector_product(
+__global__ void gpu_calculate_ppr(
     std::vector<int> cols_idx, 
     std::vector<int> ptr, 
     std::vector<int> val,
-    std::vector<int> vec,
+    std::vector<int> p,
+    std::vector<int> dangling,
+    std::vector<int> pers_vec,
     std::vector<int> result)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
     int end = ptr[idx + 1];
 
-    int prod = 0;
+    int prod_fact = 0, dang_fact = 0, pers_fact = 0
     for (int i = start; i <= end; i++) {
-        prod += val[i] * vec[cols_idx[i]];
+        prod_fact += val[i] * p[cols_idx[i]];
+        dang_fact += dangling[i] * p[cols_idx[i];
     }
-    result[idx] = prod;
+    prod_fact *= alpha;
+    dang_fact *= alpha / V;
+    pers_fact = (1 - alpha) * pers_vec;
+
+    result[idx] = prod_fact + dang_fact + pers_fact;
 }
 
 //////////////////////////////
