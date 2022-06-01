@@ -38,6 +38,24 @@ using clock_type = chrono::high_resolution_clock;
 
 // Write GPU kernel here!
 
+__global__ void gpu_matrix_vector_product(
+    std::vector<int> cols_idx, 
+    std::vector<int> ptr, 
+    std::vector<int> val,
+    std::vector<int> vec,
+    std::vector<int> result)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int start = ptr[idx];
+    int end = ptr[idx + 1];
+
+    int prod = 0;
+    for (int i = start; i <= end; i++) {
+        prod += val[i] * vec[cols_idx[i]];
+    }
+    result[idx] = prod;
+}
+
 //////////////////////////////
 //////////////////////////////
 
@@ -136,6 +154,20 @@ void PersonalizedPageRank::converter(){
 
 }
 
+void PersonalizedPageRank::alloc_to_gpu() {
+    
+    cudaMalloc(&d_x, sizeof(double) * x.size());
+    cudaMalloc(&d_y, sizeof(double) * y.size());
+    cudaMalloc(&d_val, sizeof(double) * val.size());
+    cudaMalloc(&d_dangling, sizeof(double) * dangling.size());
+    cudaMalloc(&d_pr, sizeof(double) * val.size());
+
+    cudaMemcpy(d_x, x, sizeof(double) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, y, sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val, val, sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, dangling, sizeof(double) * dangling.size(), cudaMemcpyHostToDevice);
+}
+
 
 //////////////////////////////
 //////////////////////////////
@@ -149,7 +181,7 @@ void PersonalizedPageRank::alloc() {
     converter();
 
     // Allocate any GPU data here;
-    // TODO!
+    alloc_to_gpu();
 }
 
 // Initialize data;

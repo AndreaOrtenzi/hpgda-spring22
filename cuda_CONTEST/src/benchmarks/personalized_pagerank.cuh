@@ -148,6 +148,13 @@ class PersonalizedPageRank : public Benchmark {
     double precision = 0;     // How many top-20 vertices are correctly retrieved;
     std::string graph_file_path = DEFAULT_GRAPH;
 
+    std::vector<int> d_x;
+    std::vector<int> d_y;
+    std::vector<double> d_val;
+    std::vector<int> d_dangling;
+    std::vector<double> d_pr;
+
     void initialize_graph();
     void converter();
+    void alloc_to_gpu();
 };
