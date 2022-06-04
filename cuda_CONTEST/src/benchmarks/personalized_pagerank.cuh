@@ -159,11 +159,12 @@ class PersonalizedPageRank : public Benchmark {
     void gpu_calculate_ppr(
         int *cols_idx, 
         int* ptr, 
-        int* val,
-        int* p,
+        double* val,
+        double* p,
         int* dangling,
-        int* result,
+        double* result,
         int pers_ver,
-        double alpha);
+        double alpha,
+        int V);
         
 };

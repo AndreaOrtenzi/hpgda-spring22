@@ -41,12 +41,13 @@ using clock_type = chrono::high_resolution_clock;
 __global__ void gpu_calculate_ppr(
     int *cols_idx, 
     int* ptr, 
-    int* val,
-    int* p,
+    double* val,
+    double* p,
     int* dangling,
-    int* result,
+    double* result,
     int pers_ver,
-    double alpha)
+    double alpha,
+    int V)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
@@ -58,12 +59,12 @@ __global__ void gpu_calculate_ppr(
         prod_fact += val[i] * p[cols_idx[i]];        
     }
 
-    for (int i = 0; i < dangling.size(); i++){
+    for (int i = 0; i < V; i++){
         dang_fact += dangling[i] * p[cols_idx[i]];
     }
 
     prod_fact *= alpha;
-    dang_fact *= alpha / dangling.size();
+    dang_fact *= alpha / V;
     if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
         pers_fact = (1 - alpha);
     
@@ -236,8 +237,8 @@ void PersonalizedPageRank::execute(int iter) {
     double *d_temp;
     
     for (int i=0; i<max_iterations;i++){
-        // Call the GPU computation.    
-        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha);
+        // Call the GPU computation.
+        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
