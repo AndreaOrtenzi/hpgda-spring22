@@ -39,12 +39,12 @@ using clock_type = chrono::high_resolution_clock;
 // Write GPU kernel here!
 
 __global__ void gpu_calculate_ppr(
-    std::vector<int> cols_idx, 
-    std::vector<int> ptr, 
-    std::vector<int> val,
-    std::vector<int> p,
-    std::vector<int> dangling,
-    std::vector<int> result,
+    int *cols_idx, 
+    int* ptr, 
+    int* val,
+    int* p,
+    int* dangling,
+    int* result,
     int pers_ver,
     double alpha)
 {
@@ -172,18 +172,18 @@ void PersonalizedPageRank::converter(){
 
 void PersonalizedPageRank::alloc_to_gpu() {
     
-    cudaMalloc(&d_x, sizeof(double) * x.size()); (std::vector<int, std::allocator<int>> *, unsigned long)
+    cudaMalloc(&d_x, sizeof(double) * x.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
     cudaMalloc(&d_dangling, sizeof(double) * dangling.size());
     cudaMalloc(&d_pr, sizeof(double) * V);
     cudaMalloc(&d_newPr, sizeof(double) * V);
 
-    cudaMemcpy(d_x, x, sizeof(double) * x.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, y, sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_val, val, sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dangling, dangling, sizeof(double) * dangling.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_x, x, sizeof(double) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, &x[0], sizeof(double) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, &dangling[0], sizeof(double) * dangling.size(), cudaMemcpyHostToDevice);
+    
 }
 
 
@@ -217,7 +217,7 @@ void PersonalizedPageRank::reset() {
     // Do any GPU reset here, and also transfer data to the GPU;
 
     // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
-    memset(pr, 1.0 / V,sizeof(double) * V);
+    memset(&pr[0], 1.0 / V,sizeof(double) * V);
     
     
     // Generate a new personalization vertex for this iteration;
@@ -226,7 +226,7 @@ void PersonalizedPageRank::reset() {
 
     // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
     //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
-    cudaMemcpy(d_pr, pr, sizeof(double) * V, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pr, &pr[0], sizeof(double) * V, cudaMemcpyHostToDevice);
     
 }
 
@@ -259,7 +259,7 @@ void PersonalizedPageRank::execute(int iter) {
 
     // Copy the result from the GPU to the CPU;
     //for the future try order values in GPU and trasfer only first 20 
-    cudaMemcpy(pr, d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+    cudaMemcpy(&pr[0], d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
     
 }
 
@@ -329,10 +329,9 @@ void PersonalizedPageRank::clean() {
     
     //free(cpu_data);
     cudaFree(d_dangling);
-    cudaFree(d_pers_ver);
     cudaFree(d_pr);
     cudaFree(d_newPr);
     cudaFree(d_val);
     cudaFree(d_x);
-    cudaFree(d_y);    
+    cudaFree(d_y); 
 }

@@ -157,12 +157,13 @@ class PersonalizedPageRank : public Benchmark {
     void converter();
     void alloc_to_gpu();
     void gpu_calculate_ppr(
-        std::vector<int> cols_idx, 
-        std::vector<int> ptr, 
-        std::vector<int> val,
-        std::vector<int> p,
-        std::vector<int> dangling,
-        std::vector<int> pers_vec,
-        std::vector<int> result);
+        int *cols_idx, 
+        int* ptr, 
+        int* val,
+        int* p,
+        int* dangling,
+        int* result,
+        int pers_ver,
+        double alpha);
         
 };
