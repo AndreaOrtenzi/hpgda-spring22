@@ -231,7 +231,7 @@ void PersonalizedPageRank::reset() {
     
 }
 
-void PersonalizedPageRank::personalized_page_rank_0(iter){
+void PersonalizedPageRank::personalized_page_rank_0(int iter){
     auto start_tmp = clock_type::now();
     double *d_temp;
     
