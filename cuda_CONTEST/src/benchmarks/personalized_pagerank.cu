@@ -44,21 +44,29 @@ __global__ void gpu_calculate_ppr(
     std::vector<int> val,
     std::vector<int> p,
     std::vector<int> dangling,
-    std::vector<int> pers_vec,
+    int pers_ver,
     std::vector<int> result)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
     int end = ptr[idx + 1];
 
-    int prod_fact = 0, dang_fact = 0, pers_fact = 0
+    int prod_fact = 0, dang_fact = 0, pers_fact = 0;
+
     for (int i = start; i <= end; i++) {
-        prod_fact += val[i] * p[cols_idx[i]];
-        dang_fact += dangling[i] * p[cols_idx[i];
+        prod_fact += val[i] * p[cols_idx[i]];        
     }
+
+    for (int i = 0; i < dangling.size(); i++){
+        dang_fact += dangling[i] * p[cols_idx[i]];
+    }
+
     prod_fact *= alpha;
     dang_fact *= alpha / V;
-    pers_fact = (1 - alpha) * pers_vec;
+    if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
+        pers_fact = (1 - alpha);
+    
+    //__syncthreads();    atomicAdd(res, sum);  
 
     result[idx] = prod_fact + dang_fact + pers_fact;
 }
@@ -187,6 +195,9 @@ void PersonalizedPageRank::alloc() {
     //convert COO in CSR
     converter();
 
+    // Compute the number of blocks for implementations where the value is a function of the input size;
+    BlockNum = (V + block_size - 1) / block_size;
+
     // Allocate any GPU data here;
     alloc_to_gpu();
 }
@@ -200,19 +211,51 @@ void PersonalizedPageRank::init() {
 // Reset the state of the computation after every iteration.
 // Reset the result, and transfer data to the GPU if necessary;
 void PersonalizedPageRank::reset() {
-   // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
-   std::fill(pr.begin(), pr.end(), 1.0 / V); 
-   // Generate a new personalization vertex for this iteration;
-   personalization_vertex = rand() % V; 
-   if (debug) std::cout << "personalization vertex=" << personalization_vertex << std::endl;
+    // Do any GPU reset here, and also transfer data to the GPU;
 
-   // Do any GPU reset here, and also transfer data to the GPU;
-   // TODO!
+    // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
+    memset(pr, 1.0 / V,sizeof(double) * V);
+    
+    
+    // Generate a new personalization vertex for this iteration;
+    personalization_vertex = rand() % V; 
+    if (debug) std::cout << "personalization vertex=" << personalization_vertex << std::endl;
+
+    // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
+    //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
+    cudaMemcpy(pr, d_pr, sizeof(double) * V, cudaMemcpyHostToDevice);
+
+    cudaMemcpy(personalization_vertex,d_pers_ver,sizeof(int),cudaMemcpyHostToDevice);
+    
 }
 
+// Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
-    // Do the GPU computation here, and also transfer results to the CPU;
-    //TODO! (and save the GPU PPR values into the "pr" array)
+    auto start_tmp = clock_type::now();
+    
+    
+    for (int i=0; i<max_iterations;i++){
+        // Call the GPU computation.    
+        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_pers_ver);
+        
+        //ensure entire pr is calculated
+        cudaDeviceSynchronize();
+    }
+    
+
+    // Print performance of GPU, not accounting for transfer time;
+    if (debug) {
+        // Synchronize computation by hand to measure GPU exec. time;
+        cudaDeviceSynchronize();
+        auto end_tmp = clock_type::now();
+        auto exec_time = chrono::duration_cast<chrono::microseconds>(end_tmp - start_tmp).count();
+        std::cout << "  pure GPU execution(" << iter << ")=" << double(exec_time) / 1000 << " ms, " << std::endl;
+    }
+
+    // Copy the result from the GPU to the CPU;
+    //for the future try order values in GPU and trasfer only first 20 
+    cudaMemcpy(pr, d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+    
 }
 
 void PersonalizedPageRank::cpu_validation(int iter) {
@@ -278,5 +321,12 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 
 void PersonalizedPageRank::clean() {
     // Delete any GPU data or additional CPU data;
-    // TODO!
+    
+    //free(cpu_data);
+    cudaFree(d_dangling);
+    cudaFree(d_pers_ver);
+    cudaFree(d_pr);
+    cudaFree(d_val);
+    cudaFree(d_x);
+    cudaFree(d_y);    
 }
