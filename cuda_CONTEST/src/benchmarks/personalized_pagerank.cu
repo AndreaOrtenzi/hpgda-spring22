@@ -44,8 +44,9 @@ __global__ void gpu_calculate_ppr(
     std::vector<int> val,
     std::vector<int> p,
     std::vector<int> dangling,
+    std::vector<int> result,
     int pers_ver,
-    std::vector<int> result)
+    double alpha)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
@@ -62,7 +63,7 @@ __global__ void gpu_calculate_ppr(
     }
 
     prod_fact *= alpha;
-    dang_fact *= alpha / V;
+    dang_fact *= alpha / dangling.size();
     if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
         pers_fact = (1 - alpha);
     
@@ -171,16 +172,18 @@ void PersonalizedPageRank::converter(){
 
 void PersonalizedPageRank::alloc_to_gpu() {
     
-    cudaMalloc(&d_x, sizeof(double) * x.size());
+    cudaMalloc(&d_x, sizeof(double) * x.size()); (std::vector<int, std::allocator<int>> *, unsigned long)
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
     cudaMalloc(&d_dangling, sizeof(double) * dangling.size());
-    cudaMalloc(&d_pr, sizeof(double) * val.size());
+    cudaMalloc(&d_pr, sizeof(double) * V);
+    cudaMalloc(&d_newPr, sizeof(double) * V);
 
     cudaMemcpy(d_x, x, sizeof(double) * x.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, y, sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, val, sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, dangling, sizeof(double) * dangling.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, x, sizeof(double) * x.size(), cudaMemcpyHostToDevice);
 }
 
 
@@ -223,21 +226,23 @@ void PersonalizedPageRank::reset() {
 
     // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
     //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
-    cudaMemcpy(pr, d_pr, sizeof(double) * V, cudaMemcpyHostToDevice);
-
-    cudaMemcpy(personalization_vertex,d_pers_ver,sizeof(int),cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pr, pr, sizeof(double) * V, cudaMemcpyHostToDevice);
     
 }
 
 // Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
     auto start_tmp = clock_type::now();
-    
+    double *d_temp;
     
     for (int i=0; i<max_iterations;i++){
         // Call the GPU computation.    
-        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_pers_ver);
+        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha);
         
+        d_temp=d_pr;
+        d_pr=d_newPr;
+        d_newPr=d_temp;
+
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
     }
@@ -326,6 +331,7 @@ void PersonalizedPageRank::clean() {
     cudaFree(d_dangling);
     cudaFree(d_pers_ver);
     cudaFree(d_pr);
+    cudaFree(d_newPr);
     cudaFree(d_val);
     cudaFree(d_x);
     cudaFree(d_y);    
