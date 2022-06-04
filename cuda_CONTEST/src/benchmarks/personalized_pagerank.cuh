@@ -156,15 +156,7 @@ class PersonalizedPageRank : public Benchmark {
     void initialize_graph();
     void converter();
     void alloc_to_gpu();
-    void gpu_calculate_ppr(
-        int *cols_idx, 
-        int* ptr, 
-        double* val,
-        double* p,
-        int* dangling,
-        double* result,
-        int pers_ver,
-        double alpha,
-        int V);
+    // Implementations of the algorithm;
+    void personalized_page_rank_0(int iter);
         
 };

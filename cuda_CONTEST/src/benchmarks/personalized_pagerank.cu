@@ -38,7 +38,7 @@ using clock_type = chrono::high_resolution_clock;
 
 // Write GPU kernel here!
 
-__global__ void gpu_calculate_ppr(
+__global__ void gpu_calculate_ppr_0(
     int *cols_idx, 
     int* ptr, 
     double* val,
@@ -231,14 +231,13 @@ void PersonalizedPageRank::reset() {
     
 }
 
-// Do the GPU computation here, and also transfer results to the CPU;
-void PersonalizedPageRank::execute(int iter) {
+void PersonalizedPageRank::personalized_page_rank_0(iter){
     auto start_tmp = clock_type::now();
     double *d_temp;
     
     for (int i=0; i<max_iterations;i++){
         // Call the GPU computation.
-        gpu_calculate_ppr<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
+        gpu_calculate_ppr_0<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
@@ -261,6 +260,28 @@ void PersonalizedPageRank::execute(int iter) {
     // Copy the result from the GPU to the CPU;
     //for the future try order values in GPU and trasfer only first 20 
     cudaMemcpy(&pr[0], d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+}
+
+// Do the GPU computation here, and also transfer results to the CPU;
+void PersonalizedPageRank::execute(int iter) {
+
+    switch (implementation)
+    {
+    case 0:
+        personalized_page_rank_0(iter);
+        break;
+    case 1:
+        personalized_page_rank_1(iter);
+        break;
+    case 2:
+        personalized_page_rank_2(iter);
+        break;
+    case 3:
+        personalized_page_rank_3(iter);
+        break;
+    default:
+        break;
+    }    
     
 }
 
