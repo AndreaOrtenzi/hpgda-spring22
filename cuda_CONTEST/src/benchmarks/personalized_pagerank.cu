@@ -270,15 +270,7 @@ void PersonalizedPageRank::execute(int iter) {
     case 0:
         personalized_page_rank_0(iter);
         break;
-    case 1:
-        personalized_page_rank_1(iter);
-        break;
-    case 2:
-        personalized_page_rank_2(iter);
-        break;
-    case 3:
-        personalized_page_rank_3(iter);
-        break;
+    
     default:
         break;
     }    
