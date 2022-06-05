@@ -9,5 +9,5 @@
 #bin/b -d -c -n 1000 -b mmul -I 2 -i 30 -t 8 -B 14;
 
 # Run PPR;
-bin/b -d -c -n 1000 -b ppr -I 1 -i 1 -t 64;
-bin/b -d -c -n 1000 -b ppr -I 1 -i 1 -t 64 -g './data/small.mtx';
+#bin/b -d -c -n 1000 -b ppr -I 0 -i 1 -t 64;
+bin/b -d -c -n 1000 -b ppr -I 0 -i 1 -t 64 -g './data/small.mtx';
