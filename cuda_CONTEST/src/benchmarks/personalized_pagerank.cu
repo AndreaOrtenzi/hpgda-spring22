@@ -28,6 +28,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <sstream>
+#include <assert.h>
 #include "personalized_pagerank.cuh"
 
 namespace chrono = std::chrono;
