@@ -62,12 +62,8 @@ __global__ void gpu_calculate_ppr_0(
             prod_fact += val[i] * p[cols_idx[i]];        
         }
 
-        for (int i = 0; i < V; i++){
-            dang_fact += dangling[i] * p[i];
-        }
-
         prod_fact *= alpha;
-        dang_fact *= alpha / V;
+	dang_fact = (alpha / V) *dangling[idx] * p[idx];
         if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
             pers_fact = (1 - alpha);
         
