@@ -63,7 +63,7 @@ __global__ void gpu_calculate_ppr_0(
         }
 
         for (int i = 0; i < V; i++){
-            dang_fact += dangling[i] * p[cols_idx[i]];
+            dang_fact += dangling[i] * p[i];
         }
 
         prod_fact *= alpha;
