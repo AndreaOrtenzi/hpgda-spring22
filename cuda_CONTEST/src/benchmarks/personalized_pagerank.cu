@@ -51,8 +51,8 @@ __global__ void gpu_calculate_ppr_0(
     int V)
 {
     assert(alpha==0.85);
-    //int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    for (int idx=0; idx < V; idx++){
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    
         int start = ptr[idx];
         int end = ptr[idx + 1];
 
@@ -62,15 +62,19 @@ __global__ void gpu_calculate_ppr_0(
             prod_fact += val[i] * p[cols_idx[i]];        
         }
 
+        for (int i = 0; i < V; i++){
+            dang_fact += dangling[i] * p[i];
+        }
+
         prod_fact *= alpha;
-	dang_fact = (alpha / V) *dangling[idx] * p[idx];
+        dang_fact *= alpha / V;
         if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
             pers_fact = (1 - alpha);
         
         //__syncthreads();    atomicAdd(res, sum);  
 
         result[idx] = prod_fact + dang_fact + pers_fact;   
-    }
+    
     
 }
 
@@ -245,7 +249,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     
     for (int i=0; i<max_iterations;i++){
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<1, 1>>>(d_y, d_x, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
+        gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
