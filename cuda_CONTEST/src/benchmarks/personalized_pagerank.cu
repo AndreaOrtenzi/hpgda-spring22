@@ -49,28 +49,32 @@ __global__ void gpu_calculate_ppr_0(
     double alpha,
     int V)
 {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    int start = ptr[idx];
-    int end = ptr[idx + 1];
+    assert(alpha==0.85);
+    //int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    for (int idx=0; idx < V; idx++){
+        int start = ptr[idx];
+        int end = ptr[idx + 1];
 
-    int prod_fact = 0, dang_fact = 0, pers_fact = 0;
+        double prod_fact = 0, dang_fact = 0, pers_fact = 0;
 
-    for (int i = start; i <= end; i++) {
-        prod_fact += val[i] * p[cols_idx[i]];        
+        for (int i = start; i <= end; i++) {
+            prod_fact += val[i] * p[cols_idx[i]];        
+        }
+
+        for (int i = 0; i < V; i++){
+            dang_fact += dangling[i] * p[cols_idx[i]];
+        }
+
+        prod_fact *= alpha;
+        dang_fact *= alpha / V;
+        if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
+            pers_fact = (1 - alpha);
+        
+        //__syncthreads();    atomicAdd(res, sum);  
+
+        result[idx] = prod_fact + dang_fact + pers_fact;   
     }
-
-    for (int i = 0; i < V; i++){
-        dang_fact += dangling[i] * p[cols_idx[i]];
-    }
-
-    prod_fact *= alpha;
-    dang_fact *= alpha / V;
-    if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
-        pers_fact = (1 - alpha);
     
-    //__syncthreads();    atomicAdd(res, sum);  
-
-    result[idx] = prod_fact + dang_fact + pers_fact;
 }
 
 //////////////////////////////
@@ -163,8 +167,12 @@ void PersonalizedPageRank::converter(){
     }
 
 
-    //for (int i =0; i< xPtr.size(); i++){
-    //    cout << xPtr[i] << " ";
+    //if (debug){
+    //    std::cout << "vettore ptr: ";
+    //    for (int i =0; i< xPtr.size(); i++){
+    //        std::cout << xPtr[i] << " ";
+    //    }
+    //    std::cout << "\n";
     //}
     
     x=xPtr;
@@ -218,7 +226,10 @@ void PersonalizedPageRank::reset() {
     // Do any GPU reset here, and also transfer data to the GPU;
 
     // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
-    memset(&pr[0], 1.0 / V,sizeof(double) * V);
+    pr.clear();
+    for (int i=0; i<V;i++){
+        pr.push_back(1.0 / V);
+    }
     
     
     // Generate a new personalization vertex for this iteration;
@@ -237,7 +248,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     
     for (int i=0; i<max_iterations;i++){
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<BlockNum, block_size,sizeof(double) * block_size>>>(d_x, d_y, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
+        gpu_calculate_ppr_0<<<1, 1>>>(d_y, d_x, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
