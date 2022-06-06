@@ -156,8 +156,8 @@ class PersonalizedPageRank : public Benchmark {
     void initialize_graph();
     void converter();
     void alloc_to_gpu();
-    double euclidean_distance(const double *x, const double *y, const int N)
+    double euclidean_distance(const double *x, const double *y, const int N);
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
-    
+
 };
