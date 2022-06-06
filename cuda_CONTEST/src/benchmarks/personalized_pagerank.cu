@@ -255,7 +255,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
 
-        double err = euclidean_distance(d_pr, d_newPr, V);
+        //double err = euclidean_distance(d_pr, d_newPr, V);
         converged = err <= convergence_threshold;
     }
     
