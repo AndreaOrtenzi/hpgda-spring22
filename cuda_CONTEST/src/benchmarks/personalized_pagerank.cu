@@ -274,7 +274,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     cudaMemcpy(&pr[0], d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
 }
 
-double PersonalizedPageRank::euclidean_distance(const double *x, const double *y, const int N) {
+double PersonalizedPageRank::euclidean_distance(double *x, double *y, int N) {
     double result = 0;
     for (int i = 0; i < N; i++) {
         double tmp = x[i] - y[i];
