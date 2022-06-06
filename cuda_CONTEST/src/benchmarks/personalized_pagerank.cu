@@ -356,11 +356,10 @@ void PersonalizedPageRank::clean() {
     cudaFree(d_x);
     cudaFree(d_y); 
 
-    cudaFree(dangling);
-    cudaFree(pr);
-    cudaFree(newPr);
-    cudaFree(val);
-    cudaFree(x);
-    cudaFree(y); 
+    free(dangling);
+    free(pr);
+    free(val);
+    free(x);
+    free(y); 
 
 }
