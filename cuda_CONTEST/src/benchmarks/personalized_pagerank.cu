@@ -356,10 +356,10 @@ void PersonalizedPageRank::clean() {
     cudaFree(d_x);
     cudaFree(d_y); 
 
-    free(dangling);
-    free(pr);
-    free(val);
-    free(x);
-    free(y); 
+    dangling = vector<int>();
+    pr = vector<double>();
+    val = vector<int>();
+    x = vector<int>();
+    y = vector<int>();
 
 }
