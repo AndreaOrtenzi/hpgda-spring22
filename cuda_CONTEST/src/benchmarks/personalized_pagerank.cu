@@ -348,13 +348,19 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 }
 
 void PersonalizedPageRank::clean() {
-    // Delete any GPU data or additional CPU data;
-    
-    //free(cpu_data);
+    // Delete any GPU data or additional CPU data;    
     cudaFree(d_dangling);
     cudaFree(d_pr);
     cudaFree(d_newPr);
     cudaFree(d_val);
     cudaFree(d_x);
     cudaFree(d_y); 
+
+    cudaFree(dangling);
+    cudaFree(pr);
+    cudaFree(newPr);
+    cudaFree(val);
+    cudaFree(x);
+    cudaFree(y); 
+
 }
