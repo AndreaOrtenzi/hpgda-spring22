@@ -242,12 +242,10 @@ void PersonalizedPageRank::reset() {
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
     auto start_tmp = clock_type::now();
     double *d_temp;
-    bool converged = false;
-
-    int i = 0;
-    while ((!converged && i < max_iterations) && i <= 30) {
+    
+    for (int i=0; i<max_iterations;i++){
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
@@ -255,10 +253,6 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
 
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
-
-        double err = euclidean_distance(d_pr, d_newPr, V);
-        converged = err <= convergence_threshold;
-        i++;
     }
     
 
@@ -274,15 +268,6 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     // Copy the result from the GPU to the CPU;
     //for the future try order values in GPU and trasfer only first 20 
     cudaMemcpy(&pr[0], d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
-}
-
-double PersonalizedPageRank::euclidean_distance(double *x, double *y, int N) {
-    double result = 0;
-    for (int i = 0; i < N; i++) {
-        double tmp = x[i] - y[i];
-        result += tmp * tmp;
-    }
-    return std::sqrt(result);
 }
 
 // Do the GPU computation here, and also transfer results to the CPU;
