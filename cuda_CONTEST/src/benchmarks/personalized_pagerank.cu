@@ -244,9 +244,10 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     double *d_temp;
     bool converged = false;
 
-    while (!converged && iter < max_iterations) {
+    int = 0;
+    while (!converged && i < max_iterations) {
         // Call the GPU computation.
-        //gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
         
         d_temp=d_pr;
         d_pr=d_newPr;
@@ -257,6 +258,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
 
         double err = euclidean_distance(d_pr, d_newPr, V);
         converged = err <= convergence_threshold;
+        i++;
     }
     
 
