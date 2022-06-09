@@ -57,7 +57,7 @@ __global__ void gpu_calculate_ppr_0(
     double prod_fact = 0, dang_fact = 0, pers_fact = 0;
 
     for (int i = start; i < end; i++) {
-        prod_fact += val[cols_idx[i]] * p[i];        
+        prod_fact += val[i] * p[cols_idx[i]];        
     }
 
     for (int i = 0; i < V; i++){
