@@ -249,7 +249,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     while (!converged && i < max_iterations) {
         
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<1, 16>>>(d_x, d_y, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_0<<<1, 16>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
         
 
         d_temp=d_pr;
