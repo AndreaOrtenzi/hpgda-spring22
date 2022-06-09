@@ -224,8 +224,10 @@ void PersonalizedPageRank::reset() {
 
     // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
     pr.clear();
+    prNew.clean();
     for (int i=0; i<V;i++){
         pr.push_back(1.0 / V);
+        prNew.push_back(1.0 / V);
     }
     
     
