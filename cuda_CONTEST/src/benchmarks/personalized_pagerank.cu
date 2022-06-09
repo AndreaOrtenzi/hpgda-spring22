@@ -51,27 +51,29 @@ __global__ void gpu_calculate_ppr_0(
     int V)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;   
-    int start = ptr[idx];
-    int end = ptr[idx + 1];
 
-    double prod_fact = 0, dang_fact = 0, pers_fact = 0;
+    if (idx < 4) {
+        int start = ptr[idx];
+        int end = ptr[idx + 1];
+        double prod_fact = 0, dang_fact = 0, pers_fact = 0;
 
-    for (int i = start; i < end; i++) {
-        prod_fact += val[i] * p[cols_idx[i]];        
-    }
+        for (int i = start; i < end; i++) {
+            prod_fact += val[i] * p[cols_idx[i]];        
+        }
 
-    for (int i = 0; i < V; i++){
-        dang_fact += dangling[i] * p[i];
-    }
+        for (int i = 0; i < V; i++){
+            dang_fact += dangling[i] * p[i];
+        }
 
-    prod_fact *= alpha;
-    dang_fact *= alpha / V;
-    if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
-        pers_fact = (1 - alpha);
-    
-    //__syncthreads();    atomicAdd(res, sum);  
+        prod_fact *= alpha;
+        dang_fact *= alpha / V;
+        if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
+            pers_fact = (1 - alpha);
+        
+        //__syncthreads();    atomicAdd(res, sum);  
 
-    result[idx] = prod_fact + dang_fact + pers_fact;   
+        result[idx] = prod_fact + dang_fact + pers_fact;
+    } 
 }
 
 //////////////////////////////
