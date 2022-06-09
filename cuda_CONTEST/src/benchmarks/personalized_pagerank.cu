@@ -254,8 +254,6 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
     }
-    free(d_temp);
-    
 
     // Print performance of GPU, not accounting for transfer time;
     if (debug) {
@@ -362,14 +360,14 @@ void PersonalizedPageRank::clean() {
     std::cout<<"d_y";
     cudaFree(d_y); 
 
-    std::cout<<"dangling";
+    
     dangling.clear();
     dangling.shrink_to_fit();
     pr.clear();
     pr.shrink_to_fit();
     val.clear();
     val.shrink_to_fit();
-    std::cout<<"x";
+    
     x.clear();
     x.shrink_to_fit();
     y.clear(); 
