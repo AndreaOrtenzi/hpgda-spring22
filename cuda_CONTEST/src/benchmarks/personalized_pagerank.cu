@@ -52,7 +52,7 @@ __global__ void gpu_calculate_ppr_0(
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;   
 
-    if (idx < 4) {
+    if (idx < 16) {
         int start = ptr[idx];
         int end = ptr[idx + 1];
         double prod_fact = 0, dang_fact = 0, pers_fact = 0;
