@@ -57,7 +57,7 @@ __global__ void gpu_calculate_ppr_0(
     double prod_fact = 0, dang_fact = 0, pers_fact = 0;
 
     for (int i = start; i < end; i++) {
-        prod_fact += val[i] * p[cols_idx[i]];        
+        prod_fact += val[cols_idx[i]] * p[i];        
     }
 
     for (int i = 0; i < V; i++){
@@ -356,10 +356,16 @@ void PersonalizedPageRank::clean() {
     cudaFree(d_x);
     cudaFree(d_y); 
 
-    dangling = vector<int>();
-    pr = vector<double>();
-    val = vector<int>();
-    x = vector<int>();
-    y = vector<int>();
+
+    dangling.clear();
+    dangling.shrink_to_fit();
+    pr.clear();
+    pr.shrink_to_fit();
+    val.clear();
+    val.shrink_to_fit();
+    x.clear();
+    x.shrink_to_fit();
+    y.clear(); 
+    y.shrink_to_fit();
 
 }
