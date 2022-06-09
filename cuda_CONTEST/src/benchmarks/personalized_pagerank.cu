@@ -254,8 +254,6 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
     }
-    free(d_temp);
-    
 
     // Print performance of GPU, not accounting for transfer time;
     if (debug) {
@@ -349,23 +347,6 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 
 void PersonalizedPageRank::clean() {
     // Delete any GPU data or additional CPU data;    
-    cudaFree(d_dangling);
-    cudaFree(d_pr);
-    cudaFree(d_newPr);
-    cudaFree(d_val);
-    cudaFree(d_x);
-    cudaFree(d_y); 
-
-
-    dangling.clear();
-    dangling.shrink_to_fit();
-    pr.clear();
-    pr.shrink_to_fit();
-    val.clear();
-    val.shrink_to_fit();
-    x.clear();
-    x.shrink_to_fit();
-    y.clear(); 
-    y.shrink_to_fit();
+    
 
 }
