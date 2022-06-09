@@ -144,7 +144,7 @@ void PersonalizedPageRank::converter(){
     // csr_col:  0  1  1  3  2  3  4  5
     // csr_x:  0  2  4  7  8
 
-    if(E==0)
+    if(E==0) //pay attention here
         return;
     
     previousX = 0;
@@ -181,14 +181,14 @@ void PersonalizedPageRank::alloc_to_gpu() {
     cudaMalloc(&d_x, sizeof(double) * x.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
-    cudaMalloc(&d_dangling, sizeof(double) * dangling.size());
+    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
     cudaMalloc(&d_pr, sizeof(double) * V);
     cudaMalloc(&d_newPr, sizeof(double) * V);
 
     cudaMemcpy(d_x, &x[0], sizeof(double) * x.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dangling, &dangling[0], sizeof(double) * dangling.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
     
 }
 
@@ -240,33 +240,30 @@ void PersonalizedPageRank::reset() {
 }
 
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
-    auto start_tmp = clock_type::now();
+    bool converged = false;
     double *d_temp;
-    
-    for (int i=0; i<max_iterations;i++){
-        // Call the GPU computation.
-        gpu_calculate_ppr_0<<<1, 17>>>(d_y, d_x, d_val, d_pr,d_dangling,d_newPr,personalization_vertex,alpha,V);
+    int i = 0;
+
+    while (!converged && i < max_iterations) {
         
+        // Call the GPU computation.
+        gpu_calculate_ppr_0<<<1, 16>>>(d_x, d_y, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
+        
+
         d_temp=d_pr;
         d_pr=d_newPr;
         d_newPr=d_temp;
 
+        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr[0],d_newPr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
-    }
 
-    // Print performance of GPU, not accounting for transfer time;
-    if (debug) {
-        // Synchronize computation by hand to measure GPU exec. time;
-        cudaDeviceSynchronize();
-        auto end_tmp = clock_type::now();
-        auto exec_time = chrono::duration_cast<chrono::microseconds>(end_tmp - start_tmp).count();
-        std::cout << "  pure GPU execution(" << iter << ")=" << double(exec_time) / 1000 << " ms, " << std::endl;
+        double err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
+        converged = err <= convergence_threshold;
+        i++;
     }
-
-    // Copy the result from the GPU to the CPU;
-    //for the future try order values in GPU and trasfer only first 20 
-    cudaMemcpy(&pr[0], d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
 }
 
 // Do the GPU computation here, and also transfer results to the CPU;

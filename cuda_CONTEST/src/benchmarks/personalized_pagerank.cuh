@@ -140,6 +140,7 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<double> val;  // Used for matrix value, initially all values are 1;
     std::vector<int> dangling;
     std::vector<double> pr;   // Store here the PageRank values computed by the GPU;
+    std::vector<double> newPr;
     std::vector<double> pr_golden;  // PageRank values computed by the CPU;
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;
