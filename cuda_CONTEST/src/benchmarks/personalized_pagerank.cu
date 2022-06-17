@@ -172,7 +172,7 @@ void PersonalizedPageRank::converter(){
     //    std::cout << "\n";
     //}
     
-    x=xPtr;
+    convertedX=xPtr;
 
 }
 
@@ -185,7 +185,7 @@ void PersonalizedPageRank::alloc_to_gpu() {
     cudaMalloc(&d_pr, sizeof(double) * V);
     cudaMalloc(&d_newPr, sizeof(double) * V);
 
-    cudaMemcpy(d_x, &x[0], sizeof(double) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, &convertedX[0], sizeof(double) * convertedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);

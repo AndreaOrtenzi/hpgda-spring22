@@ -136,6 +136,7 @@ class PersonalizedPageRank : public Benchmark {
     int E = 0;
     int BlockNum = 0;
     std::vector<int> x;       // Source coordinate of edges in graph;
+    std::vector<int> convertedX;
     std::vector<int> y;       // Destination coordinate of edges in graph;
     std::vector<double> val;  // Used for matrix value, initially all values are 1;
     std::vector<int> dangling;
