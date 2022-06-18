@@ -40,8 +40,8 @@ using clock_type = chrono::high_resolution_clock;
 // Write GPU kernel here!
 
 __global__ void gpu_calculate_ppr_0(
-    int *cols_idx, 
-    int* ptr, 
+    int *cols_idx,
+    int* ptr,
     double* val,
     double* p,
     int* dangling,
@@ -50,14 +50,14 @@ __global__ void gpu_calculate_ppr_0(
     double alpha,
     int V)
 {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;   
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
     int end = ptr[idx + 1];
 
     double prod_fact = 0, dang_fact = 0, pers_fact = 0;
 
     for (int i = start; i < end; i++) {
-        prod_fact += val[i] * p[cols_idx[i]];        
+        prod_fact += val[i] * p[cols_idx[i]];
     }
 
     for (int i = 0; i < V; i++){
@@ -66,12 +66,9 @@ __global__ void gpu_calculate_ppr_0(
 
     prod_fact *= alpha;
     dang_fact *= alpha / V;
-    if (pers_ver == idx)//for the future preprocess pers_ver in a vector check condition
-        pers_fact = (1 - alpha);
-    
-    //__syncthreads();    atomicAdd(res, sum);  
 
-    result[idx] = prod_fact + dang_fact + pers_fact;   
+    //__syncthreads();    atomicAdd(res, sum);
+    result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
 }
 
 //////////////////////////////
@@ -88,7 +85,7 @@ void PersonalizedPageRank::initialize_graph() {
         &num_rows, &num_columns, &E, // Store the number of vertices (row and columns must be the same value), and edges;
         true,                        // If true, read edges TRANSPOSED, i.e. edge (2, 3) is loaded as (3, 2). We set this true as it simplifies the PPR computation;
         false,                       // If true, read the third column of the matrix file. If false, set all values to 1 (this is what you want when reading a graph topology);
-        debug,                 
+        debug,
         false,                       // MTX files use indices starting from 1. If for whatever reason your MTX files uses indices that start from 0, set zero_indexed_file=true;
         true                         // If true, sort the edges in (x, y) order. If you have a sorted MTX file, turn this to false to make loading faster;
     );
@@ -118,7 +115,7 @@ void PersonalizedPageRank::initialize_graph() {
     }
     // Divide each edge value by the outdegree of the source vertex;
     for (int i = 0; i < E; i++) {
-        val[i] = 1.0 / outdegree[y[i]];  
+        val[i] = 1.0 / outdegree[y[i]];
     }
     free(outdegree);
 }
@@ -146,21 +143,21 @@ void PersonalizedPageRank::converter(){
 
     if(E==0) //pay attention here
         return;
-    
+
     previousX = 0;
     xPtr.push_back(0);
 
     for (int i =0; i< E; i++) {
-        
+
         while(x[i]!=previousX){
             xPtr.push_back(ptr);
             previousX++;
         }
         ptr++;
     }
-    
+
     for (int i =0; i< V-x[E-1]; i++) {
-        xPtr.push_back(ptr); 
+        xPtr.push_back(ptr);
     }
 
 
@@ -171,13 +168,13 @@ void PersonalizedPageRank::converter(){
     //    }
     //    std::cout << "\n";
     //}
-    
+
     convertedX=xPtr;
 
 }
 
 void PersonalizedPageRank::alloc_to_gpu() {
-    
+
     cudaMalloc(&d_x, sizeof(double) * x.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
@@ -189,7 +186,7 @@ void PersonalizedPageRank::alloc_to_gpu() {
     cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
-    
+
 }
 
 
@@ -200,7 +197,7 @@ void PersonalizedPageRank::alloc_to_gpu() {
 void PersonalizedPageRank::alloc() {
     // Load the input graph and preprocess it;
     initialize_graph();
-    
+
     //convert COO in CSR
     converter();
 
@@ -229,16 +226,16 @@ void PersonalizedPageRank::reset() {
         pr.push_back(1.0 / V);
         newPr.push_back(1.0 / V);
     }
-    
-    
+
+
     // Generate a new personalization vertex for this iteration;
-    personalization_vertex = rand() % V; 
+    personalization_vertex = rand() % V;
     if (debug) std::cout << "personalization vertex=" << personalization_vertex << std::endl;
 
     // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
     //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
     cudaMemcpy(d_pr, &pr[0], sizeof(double) * V, cudaMemcpyHostToDevice);
-    
+
 }
 
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
@@ -247,10 +244,10 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     int i = 0;
 
     while (!converged && i < max_iterations) {
-        
+
         // Call the GPU computation.
         gpu_calculate_ppr_0<<<1, 16>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
-        
+
 
         d_temp=d_pr;
         d_pr=d_newPr;
@@ -276,11 +273,11 @@ void PersonalizedPageRank::execute(int iter) {
     case 0:
         personalized_page_rank_0(iter);
         break;
-    
+
     default:
         break;
-    }    
-    
+    }
+
 }
 
 void PersonalizedPageRank::cpu_validation(int iter) {
@@ -345,7 +342,7 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 }
 
 void PersonalizedPageRank::clean() {
-    // Delete any GPU data or additional CPU data;    
-    
+    // Delete any GPU data or additional CPU data;
+
 
 }
