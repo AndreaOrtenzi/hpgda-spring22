@@ -64,6 +64,31 @@ __global__ void gpu_calculate_ppr_0(
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
 }
 
+__global__ void gpu_calculate_ppr_1(
+    int *cols_idx,
+    int* ptr,
+    float* val,
+    float* p,
+    float dang_fact,
+    float* result,
+    int pers_ver,
+    float alpha,
+    int V)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int start = ptr[idx];
+    int end = ptr[idx + 1];
+
+    float prod_fact = 0;
+    for (int i = start; i < end; i++) {
+        prod_fact += val[i] * p[cols_idx[i]];
+    }
+    prod_fact *= alpha;
+
+    //__syncthreads();    atomicAdd(res, sum);
+    result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
+}
+
 //////////////////////////////
 //////////////////////////////
 
@@ -166,7 +191,16 @@ void PersonalizedPageRank::converter(){
 
 }
 
-void PersonalizedPageRank::alloc_to_gpu() {
+float euclidean_distance_flaot(float *x, float *y, const int N) {
+    float result = 0;
+    for (int i = 0; i < N; i++) {
+        float tmp = x[i] - y[i];
+        result += tmp * tmp;
+    }
+    return std::sqrt(result);
+}
+
+void PersonalizedPageRank::alloc_to_gpu_0() {
 
     cudaMalloc(&d_x, sizeof(double) * x.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
@@ -179,6 +213,37 @@ void PersonalizedPageRank::alloc_to_gpu() {
     cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+
+}
+
+void PersonalizedPageRank::alloc_to_gpu_1() {
+
+    cudaMalloc(&d_x, sizeof(int) * x.size());
+    cudaMalloc(&d_y, sizeof(int) * y.size());
+    cudaMalloc(&d_val_f, sizeof(float) * val.size());
+    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
+    cudaMalloc(&d_pr_f, sizeof(float) * V);
+    cudaMalloc(&d_newPr_f, sizeof(float) * V);
+
+    cudaMemcpy(d_x, &convertedX[0], sizeof(int) * convertedX.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val, &val[0], sizeof(float) *  val.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+    
+}
+
+void PersonalizedPageRank::alloc_to_gpu() {
+
+     switch (implementation) {
+        case 0:
+            alloc_to_gpu_0();
+            break;
+        case 1:
+            alloc_to_gpu_1();
+            break;
+        default:
+            break;
+    }
 
 }
 
@@ -231,6 +296,39 @@ void PersonalizedPageRank::reset() {
 
 }
 
+void PersonalizedPageRank::personalized_page_rank_1(int iter){
+    bool converged = false;
+    float *d_temp;
+    int i = 0;
+    int BlockNum=(V+1)/block_size; //change this function!
+
+    while (!converged && i < max_iterations) {
+
+        float dang_fact = 0;
+        for (int j = 0; j < V; j++){
+            dang_fact += dangling[j] * pr[j];
+        }
+        dang_fact *= alpha / V;
+        // Call the GPU computation.
+        gpu_calculate_ppr_1<<< BlockNum, block_size>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
+
+
+        d_temp=d_pr;
+        d_pr=d_newPr;
+        d_newPr=d_temp;
+
+        cudaMemcpy(&pr[0],d_pr, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr[0],d_newPr, sizeof(float) * V, cudaMemcpyDeviceToHost);
+
+        //ensure entire pr is calculated
+        cudaDeviceSynchronize();
+
+        float err = euclidean_distance_float(&newPr[0], &pr[0], V);
+        converged = err <= convergence_threshold;
+        i++;
+    }
+}
+
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
     bool converged = false;
     double *d_temp;
@@ -267,14 +365,15 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
 // Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
 
-    switch (implementation)
-    {
-    case 0:
-        personalized_page_rank_0(iter);
-        break;
-
-    default:
-        break;
+    switch (implementation) {
+        case 0:
+            personalized_page_rank_0(iter);
+            break;
+        case 1:
+            personalized_page_rank_1(iter);
+            break;
+        default:
+            break;
     }
 
 }

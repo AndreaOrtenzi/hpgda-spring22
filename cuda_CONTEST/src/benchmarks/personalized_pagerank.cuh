@@ -153,13 +153,17 @@ class PersonalizedPageRank : public Benchmark {
 
     int *d_x, *d_y, *d_dangling;
     double *d_val,*d_pr,*d_newPr;
+    double *d_val_f, *d_pr_f, *d_newPr_f;
     
 
     void initialize_graph();
     void converter();
     void alloc_to_gpu();
-    double euclidean_distance(double *x, double *y, int N);
+    void alloc_to_gpu_0();
+    void alloc_to_gpu_1();
+    double euclidean_distance_flaot(double *x, double *y, int N);
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
+    void personalized_page_rank_1(int iter);
 
 };
