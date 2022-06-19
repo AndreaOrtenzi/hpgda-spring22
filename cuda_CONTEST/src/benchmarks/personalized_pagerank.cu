@@ -55,13 +55,10 @@ __global__ void gpu_calculate_ppr_0(
     int end = ptr[idx + 1];
 
     double prod_fact = 0;
-
     for (int i = start; i < end; i++) {
         prod_fact += val[i] * p[cols_idx[i]];
     }
-
     prod_fact *= alpha;
-    dang_fact *= alpha / V;
 
     //__syncthreads();    atomicAdd(res, sum);
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
@@ -245,6 +242,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         for (int j = 0; j < V; j++){
             dang_fact += dangling[j] * pr[j];
         }
+        dang_fact *= alpha / V;
         // Call the GPU computation.
         gpu_calculate_ppr_0<<<46933, 76>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
 
