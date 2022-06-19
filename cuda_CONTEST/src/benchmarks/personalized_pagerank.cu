@@ -44,7 +44,7 @@ __global__ void gpu_calculate_ppr_0(
     int* ptr,
     double* val,
     double* p,
-    int* dangling,
+    double dang_fact,
     double* result,
     int pers_ver,
     double alpha,
@@ -54,14 +54,10 @@ __global__ void gpu_calculate_ppr_0(
     int start = ptr[idx];
     int end = ptr[idx + 1];
 
-    double prod_fact = 0, dang_fact = 0, pers_fact = 0;
+    double prod_fact = 0;
 
     for (int i = start; i < end; i++) {
         prod_fact += val[i] * p[cols_idx[i]];
-    }
-
-    for (int i = 0; i < V; i++){
-        dang_fact += dangling[i] * p[i];
     }
 
     prod_fact *= alpha;
@@ -245,8 +241,12 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
 
     while (!converged && i < max_iterations) {
 
+        double dang_fact = 0;
+        for (int j = 0; j < V; j++){
+            dang_fact += dangling[j] * p[j];
+        }
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<1, 16>>>(d_y, d_x, d_val, d_pr, d_dangling, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_0<<<46933, 76>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
 
 
         d_temp=d_pr;
