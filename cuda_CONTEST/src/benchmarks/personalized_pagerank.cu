@@ -243,7 +243,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
 
         double dang_fact = 0;
         for (int j = 0; j < V; j++){
-            dang_fact += dangling[j] * p[j];
+            dang_fact += dangling[j] * pr[j];
         }
         // Call the GPU computation.
         gpu_calculate_ppr_0<<<46933, 76>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
