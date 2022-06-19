@@ -124,6 +124,7 @@ void PersonalizedPageRank::initialize_graph() {
     }
     // Initialize the CPU PageRank vector;
     pr.resize(V);
+    pr_f.resize(V);
     pr_golden.resize(V);
     // Initialize the value vector of the graph (1 / outdegree of each vertex).
     // Count how many edges start in each vertex (here, the source vertex is y as the matrix is transposed);
@@ -134,6 +135,7 @@ void PersonalizedPageRank::initialize_graph() {
     // Divide each edge value by the outdegree of the source vertex;
     for (int i = 0; i < E; i++) {
         val[i] = 1.0 / outdegree[y[i]];
+        val_f[i] = 1.0 / outdegree[y[i]];
     }
     free(outdegree);
 }
@@ -191,7 +193,7 @@ void PersonalizedPageRank::converter(){
 
 }
 
-float euclidean_distance_flaot(float *x, float *y, const int N) {
+float PersonalizedPageRank::euclidean_distance_float(float *x, float *y, const int N) {
     float result = 0;
     for (int i = 0; i < N; i++) {
         float tmp = x[i] - y[i];
@@ -220,16 +222,16 @@ void PersonalizedPageRank::alloc_to_gpu_1() {
 
     cudaMalloc(&d_x, sizeof(int) * x.size());
     cudaMalloc(&d_y, sizeof(int) * y.size());
-    cudaMalloc(&d_val_f, sizeof(float) * val.size());
+    cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
     cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
     cudaMalloc(&d_pr_f, sizeof(float) * V);
     cudaMalloc(&d_newPr_f, sizeof(float) * V);
 
     cudaMemcpy(d_x, &convertedX[0], sizeof(int) * convertedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_val, &val[0], sizeof(float) *  val.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &val_f[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
-    
+
 }
 
 void PersonalizedPageRank::alloc_to_gpu() {
@@ -306,24 +308,24 @@ void PersonalizedPageRank::personalized_page_rank_1(int iter){
 
         float dang_fact = 0;
         for (int j = 0; j < V; j++){
-            dang_fact += dangling[j] * pr[j];
+            dang_fact += dangling[j] * pr_f[j];
         }
         dang_fact *= alpha / V;
         // Call the GPU computation.
-        gpu_calculate_ppr_1<<< BlockNum, block_size>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_1<<< BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, alpha, V);
 
 
-        d_temp=d_pr;
-        d_pr=d_newPr;
-        d_newPr=d_temp;
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
 
-        cudaMemcpy(&pr[0],d_pr, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr[0],d_newPr, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
 
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
 
-        float err = euclidean_distance_float(&newPr[0], &pr[0], V);
+        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
         converged = err <= convergence_threshold;
         i++;
     }

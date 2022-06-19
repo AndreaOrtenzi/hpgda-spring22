@@ -135,6 +135,8 @@ class PersonalizedPageRank : public Benchmark {
     int V = 0;
     int E = 0;
     int BlockNum = 0;
+
+    // Implementation 0
     std::vector<int> x;       // Source coordinate of edges in graph;
     std::vector<int> convertedX;
     std::vector<int> y;       // Destination coordinate of edges in graph;
@@ -143,6 +145,12 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<double> pr;   // Store here the PageRank values computed by the GPU;
     std::vector<double> newPr;
     std::vector<double> pr_golden;  // PageRank values computed by the CPU;
+
+    // Implementation 1
+    std::vector<float> val_f;
+    std::vector<float> pr_f;
+    std::vector<float> newPr_f;
+
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;
     double alpha = DEFAULT_ALPHA;
@@ -153,7 +161,7 @@ class PersonalizedPageRank : public Benchmark {
 
     int *d_x, *d_y, *d_dangling;
     double *d_val,*d_pr,*d_newPr;
-    double *d_val_f, *d_pr_f, *d_newPr_f;
+    float *d_val_f, *d_pr_f, *d_newPr_f;
     
 
     void initialize_graph();
@@ -161,7 +169,7 @@ class PersonalizedPageRank : public Benchmark {
     void alloc_to_gpu();
     void alloc_to_gpu_0();
     void alloc_to_gpu_1();
-    double euclidean_distance_flaot(double *x, double *y, int N);
+    float euclidean_distance_float(float *x, float *y, int N);
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
     void personalized_page_rank_1(int iter);
