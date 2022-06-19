@@ -265,7 +265,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
 
-        float err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
+        float err = euclidean_distance(&newPr[0], &pr[0], V);
         converged = err <= convergence_threshold;
         i++;
     }
@@ -293,13 +293,13 @@ void PersonalizedPageRank::cpu_validation(int iter) {
 
     // Do Personalized PageRank on CPU;
     auto start_tmp = clock_type::now();
-    personalized_pagerank_cpu(x.data(), y.data(), (float *) val.data(), V, E, pr_golden.data(), dangling.data(), personalization_vertex, alpha, 1e-6, 100);
+    personalized_pagerank_cpu(x.data(), y.data(), (double *) val.data(), V, E, pr_golden.data(), dangling.data(), personalization_vertex, alpha, 1e-6, 100);
     auto end_tmp = clock_type::now();
     auto exec_time = chrono::duration_cast<chrono::microseconds>(end_tmp - start_tmp).count();
     std::cout << "exec time CPU=" << double(exec_time) / 1000 << " ms" << std::endl;
 
     // Obtain the vertices with highest PPR value;
-    std::vector<std::pair<int, double>> sorted_pr_tuples = sort_pr((float *) pr.data(), V);
+    std::vector<std::pair<int, double>> sorted_pr_tuples = sort_pr((double *) pr.data(), V);
     std::vector<std::pair<int, double>> sorted_pr_golden_tuples = sort_pr(pr_golden.data(), V);
 
     // Check how many of the correct top-20 PPR vertices are retrieved by the GPU;
