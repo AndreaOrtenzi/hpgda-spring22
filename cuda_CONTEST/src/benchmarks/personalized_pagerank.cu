@@ -235,6 +235,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     bool converged = false;
     double *d_temp;
     int i = 0;
+    int BlockNum=(V+1)/block_size; //change this function!
 
     while (!converged && i < max_iterations) {
 
@@ -244,7 +245,7 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         }
         dang_fact *= alpha / V;
         // Call the GPU computation.
-        gpu_calculate_ppr_0<<<46933, 76>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_0<<< BlockNum, block_size>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
 
 
         d_temp=d_pr;

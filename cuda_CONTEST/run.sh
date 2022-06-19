@@ -10,4 +10,5 @@
 
 # Run PPR;
 #bin/b -d -c -n 1000 -b ppr -I 0 -i 1 -t 64;
-bin/b -d -c -b ppr -I 0 -s 0 -t 64 -g './data/small.mtx';
+bin/b -d -c -b ppr -I 0 -s 0 -t 16 -g './data/small.mtx';
+bin/b -d -c -b ppr -I 0 -s 0 -t 76 -g './data/wikipedia.mtx';
