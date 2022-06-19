@@ -42,19 +42,19 @@ using clock_type = chrono::high_resolution_clock;
 __global__ void gpu_calculate_ppr_0(
     int *cols_idx,
     int* ptr,
-    float* val,
-    float* p,
-    float dang_fact,
-    float* result,
+    double* val,
+    double* p,
+    double dang_fact,
+    double* result,
     int pers_ver,
-    float alpha,
+    double alpha,
     int V)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int start = ptr[idx];
     int end = ptr[idx + 1];
 
-    float prod_fact = 0;
+    double prod_fact = 0;
     for (int i = start; i < end; i++) {
         prod_fact += val[i] * p[cols_idx[i]];
     }
@@ -168,16 +168,16 @@ void PersonalizedPageRank::converter(){
 
 void PersonalizedPageRank::alloc_to_gpu() {
 
-    cudaMalloc(&d_x, sizeof(float) * x.size());
-    cudaMalloc(&d_y, sizeof(float) * y.size());
-    cudaMalloc(&d_val, sizeof(float) * val.size());
+    cudaMalloc(&d_x, sizeof(double) * x.size());
+    cudaMalloc(&d_y, sizeof(double) * y.size());
+    cudaMalloc(&d_val, sizeof(double) * val.size());
     cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
-    cudaMalloc(&d_pr, sizeof(float) * V);
-    cudaMalloc(&d_newPr, sizeof(float) * V);
+    cudaMalloc(&d_pr, sizeof(double) * V);
+    cudaMalloc(&d_newPr, sizeof(double) * V);
 
-    cudaMemcpy(d_x, &convertedX[0], sizeof(float) * convertedX.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, &y[0], sizeof(float) *  y.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_val, &val[0], sizeof(float) *  val.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, &convertedX[0], sizeof(double) * convertedX.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
 
 }
@@ -227,18 +227,18 @@ void PersonalizedPageRank::reset() {
 
     // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
     //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
-    cudaMemcpy(d_pr, &pr[0], sizeof(float) * V, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pr, &pr[0], sizeof(double) * V, cudaMemcpyHostToDevice);
 
 }
 
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
     bool converged = false;
-    float *d_temp;
+    double *d_temp;
     int i = 0;
 
     while (!converged && i < max_iterations) {
 
-        float dang_fact = 0;
+        double dang_fact = 0;
         for (int j = 0; j < V; j++){
             dang_fact += dangling[j] * pr[j];
         }
@@ -251,13 +251,13 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
         d_pr=d_newPr;
         d_newPr=d_temp;
 
-        cudaMemcpy(&pr[0],d_pr, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr[0],d_newPr, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr[0],d_newPr, sizeof(double) * V, cudaMemcpyDeviceToHost);
 
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
 
-        float err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
+        double err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
         converged = err <= convergence_threshold;
         i++;
     }
