@@ -182,7 +182,7 @@ void PersonalizedPageRank::alloc_to_gpu() {
 
 }
 
-float PersonalizedPageRank::euclidean_distance(float *x, const float *y, const int N) {
+float PersonalizedPageRank::euclidean_distance(float *x, float *y, int N) {
     float result = 0;
     for (int i = 0; i < N; i++) {
         float tmp = x[i] - y[i];
