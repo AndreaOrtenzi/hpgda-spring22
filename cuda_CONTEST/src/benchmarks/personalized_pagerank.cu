@@ -330,7 +330,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
                 end_of_warp_data.push_back(WARP_SIZE*dataLen[1][warp_num_in_block*WARP_SIZE]);
             }
             
-            for (int iteration=0;iteration<dataLen[1][0];iteration++){
+            for (int iteration=0;iteration<dataLen[1][warp_num_in_block*WARP_SIZE];iteration++){
                 for (int thread_of_block=warp_num_in_block*WARP_SIZE;thread_of_block<(warp_num_in_block+1)*WARP_SIZE;thread_of_block++){
                     
                     if (iteration < dataLen[1][thread_of_block]){
