@@ -136,15 +136,16 @@ class PersonalizedPageRank : public Benchmark {
     int E = 0;
     int BlockNum = 0;
 
-    // Implementation 0
     std::vector<int> x;       // Source coordinate of edges in graph;
-    std::vector<int> convertedX;
     std::vector<int> y;       // Destination coordinate of edges in graph;
     std::vector<double> val;  // Used for matrix value, initially all values are 1;
     std::vector<int> dangling;
     std::vector<double> pr;   // Store here the PageRank values computed by the GPU;
-    std::vector<double> newPr;
     std::vector<double> pr_golden;  // PageRank values computed by the CPU;
+
+    // Implementation 0
+    std::vector<int> convertedX;
+    std::vector<double> newPr;
 
     // Implementation 1
     std::vector<float> val_f;
@@ -154,7 +155,7 @@ class PersonalizedPageRank : public Benchmark {
     //Implementation 2
     std::vector<int> processedX;
     std::vector<int> processedY;
-    std::vector<double> processedVal; //change in float
+    std::vector<float> processedVal; //change in float
     std::vector<int> block_iterations;
 
     int personalization_vertex = 0;
@@ -185,5 +186,7 @@ class PersonalizedPageRank : public Benchmark {
     void personalized_page_rank_1(int iter);
     void personalized_page_rank_2(int iter);
     
+    //testing
+    void test_pre_processing();
 
 };

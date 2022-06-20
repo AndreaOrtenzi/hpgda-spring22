@@ -31,6 +31,8 @@
 #include <assert.h>
 #include "personalized_pagerank.cuh"
 
+#define WARP_SIZE 2
+
 namespace chrono = std::chrono;
 using clock_type = chrono::high_resolution_clock;
 
@@ -203,7 +205,7 @@ void PersonalizedPageRank::converter(){
 void PersonalizedPageRank::pre_processing_coo_graph(){
     //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
     assert(E>0 && V>=block_size);
-    assert(block_size%32==0);
+    assert(block_size%WARP_SIZE==0);
     
     /* processedPr.assign(pr.begin(), pr.end());
     //because p is splitted in block_size segments but no one will access these values
@@ -217,7 +219,6 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     std::vector<int> thread_start;
 
     block_iterations.assign(no_op_in_block.begin(), no_op_in_block.end());
-
     
     //
     for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){        
@@ -229,19 +230,22 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
                 int thread_start_pos=processedX.size();
                 
                 for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){
+                    if (y[i]<block_size*thread_block_num)
+                        continue;
                     processedX.push_back(x[i]);
                     processedY.push_back(y[i]);
-                    processedVal.push_back(val[i]);
-                    not_empty_line_section=true;
+                    processedVal.push_back(val_f[i]);
+                    not_empty_line_section=true;                    
                 }
                 if (not_empty_line_section)
                     thread_start.push_back(thread_start_pos);
             }else{
                 //concat new data to the shortest thread execution
-                int insert_position=0,thread_num=0;
+                int insert_position=0,thread_num=0,length_segment_added=0;
 
                 for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){                    
-
+                    if (y[i]<block_size*thread_block_num)
+                        continue;
                     //first time inside for u have to find where to put this segment
                     if (i==convertedX[count]){                        
                         //find shortest section
@@ -254,7 +258,6 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
                             }
                         }
                         //check last thread seq:
-                        j++;
                         if (processedX.size()-thread_start[j]<shortest_exe){                                
                             insert_position=processedX.size();                                
                             shortest_exe=processedX.size()-thread_start[j];
@@ -265,14 +268,14 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
                     processedX.insert(processedX.begin() + insert_position,x[i]);
                     processedY.insert(processedY.begin() + insert_position,y[i]);
-                    processedVal.insert(processedVal.begin() + insert_position,val[i]);
+                    processedVal.insert(processedVal.begin() + insert_position,val_f[i]);
 
-                    insert_position++;
+                    length_segment_added++;
+
                 }
 
                 //change next threads starting
-                int length_segment_added=insert_position-thread_start[thread_num];
-                for (int j=thread_num+1;j<block_size && insert_position!=0;j++){
+                for (int j=thread_num+1;j<block_size && length_segment_added!=0;j++){
                     thread_start[j]=thread_start[j]+length_segment_added;
                 }
             }
@@ -280,32 +283,39 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         }
         assert(thread_start.size()==block_size); //assert(block_size>=num_not_empty_lines);
         
+        std::cout<<"\nThread_start block "<<thread_block_num<<":";
+        for (int a=0; a<thread_start.size();a++){
+          std::cout<<"  "<<thread_start[a];
+        }
+
         //make all segment of the same block same lenght adding val=0
 
         //compute max len of segments
         int j;
         for (j=0;j<block_size-1;j++){
-            if (thread_start[j+1]-thread_start[j]<block_iterations[thread_block_num]){           
+            if (thread_start[j+1]-thread_start[j]>block_iterations[thread_block_num]){           
                 block_iterations[thread_block_num]=thread_start[j+1]-thread_start[j];
             }
         }
         //check last thread seq:
-        j++;
-        if (processedX.size()-thread_start[j]<block_iterations[thread_block_num]){                                                         
+        if (processedX.size()-thread_start[j]>block_iterations[thread_block_num]){                                                         
             block_iterations[thread_block_num]=processedX.size()-thread_start[j];
         }
-
+        assert(block_iterations[thread_block_num]!=0);
+        std::cout<<"\nmax len segment: "<<block_iterations[thread_block_num];
         //adding val=0
         int no_op_in_this_thread,insertion_pos;
 
         for(j=0;j<block_size-1;j++){
             no_op_in_this_thread=block_iterations[thread_block_num]-(thread_start[j+1]-thread_start[j]);
             insertion_pos = thread_start[j+1]+no_op_in_block[thread_block_num];
-
+            
+            std::cout<<"\nno op in "<<j<<" thread: "<<no_op_in_this_thread<<" insertion_pos: "<<insertion_pos;
+            
             for (int x=0;x<no_op_in_this_thread;x++){
                 
-                processedX.insert(processedX.begin() + insertion_pos,processedX[insertion_pos-1]);
-                processedY.insert(processedY.begin() + insertion_pos,processedY[insertion_pos-1]);
+                processedX.insert(processedX.begin() + insertion_pos,processedX[insertion_pos-1-x]);
+                processedY.insert(processedY.begin() + insertion_pos,processedY[insertion_pos-1-x]);
                 processedVal.insert(processedVal.begin() + insertion_pos,0);
                 
                 insertion_pos++;
@@ -313,9 +323,9 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             no_op_in_block[thread_block_num]+=no_op_in_this_thread;
             total_no_op+=no_op_in_this_thread;
         }
-        j++;
         no_op_in_this_thread=block_iterations[thread_block_num]-(processedX.size()-(no_op_in_block[thread_block_num]+thread_start[j]));
         insertion_pos = processedX.size();
+        std::cout<<"\nno op in "<<j<<" thread: "<<no_op_in_this_thread<<" insertion_pos: "<<insertion_pos;
         for (int x=0;x<no_op_in_this_thread;x++){                                                        
             processedX.push_back(processedX[insertion_pos-1]);
             processedY.push_back(processedY[insertion_pos-1]);
@@ -324,11 +334,26 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         no_op_in_block[thread_block_num]+=no_op_in_this_thread;
         total_no_op+=no_op_in_this_thread;
 
+        std::cout<<"\nBlock "<<thread_block_num<<" data:";
+        std::cout<<"\n";
+        for (int a=thread_start[0]; a<processedX.size();a++){
+          std::cout<<"  "<<processedX[a];
+        }
+        std::cout<<"\n";
+        for (int a=thread_start[0]; a<processedY.size();a++){
+          std::cout<<"  "<<processedY[a];
+        }
+        std::cout<<"\n";
+        for (int a=thread_start[0]; a<processedVal.size();a++){
+          std::cout<<"  "<<processedVal[a];
+        }
+        std::cout<<"\n";
+
         thread_start.clear();
     }
     
     //Print avg no operations in blocks
-    std::cout<< "avg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n";
+    std::cout<< "\navg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n";
     //can use no_op_in_block to know more info
 
     no_op_in_block.clear();
@@ -582,12 +607,15 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            personalized_page_rank_2(iter);
+            test_pre_processing();
+            //personalized_page_rank_2(iter);
+            //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
+            //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
         case 3:
             //euclidean and dangling in gpu
         case 4: //euclidean 1 every 2 cycles
-        case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu to cpu only those values with their position (40*4Byte)
+        case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu only those values with their position (40*4Byte)
         //even the casting is done only on these 20 values
         default:
             break;
@@ -659,4 +687,43 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 void PersonalizedPageRank::clean() {
     // Delete any GPU data or additional CPU data;
 
+}
+
+void PersonalizedPageRank::test_pre_processing(){
+    assert(V<20);
+    int i;
+    std::cout<< "\nconvertedX:";
+    for (i=0; i<convertedX.size();i++){
+        std::cout<< "  " <<convertedX[i];
+    }
+    std::cout<< "\nx:";
+    for (i=0; i<x.size();i++){
+        std::cout<< "  " << x[i];
+    }
+    std::cout<< "\ny:";
+    for (i=0; i<y.size();i++){
+        std::cout<< "  " << y[i];
+    }
+    std::cout<< "\nval:";
+    for (i=0; i<val_f.size();i++){
+        std::cout<< "  " << val_f[i];
+    }
+
+    std::cout<< "\n\nprocessedX:";
+    for (i=0; i<40;i++){
+        std::cout<< "  " << processedX[i];
+    }
+    std::cout<< "\nprocessedY:";
+    for (i=0; i<40;i++){
+        std::cout<< "  " << processedY[i];
+    }
+    std::cout<< "\nprocessedVal:";
+    for (i=0; i<40;i++){
+        std::cout<< "  " << processedVal[i];
+    }
+
+    std::cout<< "\n\nblock_iterations:";
+    for (i=0; i<block_iterations.size();i++){
+        std::cout<< "  " << block_iterations[i];
+    }
 }
