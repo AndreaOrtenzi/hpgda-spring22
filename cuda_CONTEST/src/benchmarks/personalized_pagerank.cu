@@ -31,7 +31,7 @@
 #include <assert.h>
 #include "personalized_pagerank.cuh"
 
-#define WARP_SIZE 2
+#define WARP_SIZE 32
 
 namespace chrono = std::chrono;
 using clock_type = chrono::high_resolution_clock;
@@ -91,7 +91,43 @@ __global__ void gpu_calculate_ppr_1(
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
 }
 
-__global__ void gpu_calculate_ppr_2(){
+__global__ void gpu_calculate_ppr_2(
+    int* cols,
+    int* rows,
+    float* vals,
+    float* ppr,
+    float* results,
+    int* beginning_of_warp_data,
+    float dang_fact,
+    int pers_ver,
+    float alpha)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int warp_num =  blockIdx.x * blockDim.x/WARP_SIZE + threadIdx.x/WARP_SIZE;
+    int start = beginning_of_warp_data[warp_num]*WARP_SIZE + blockIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
+
+    extern __shared__ float *shared_mem;
+    float *ppr_shared=shared_mem;
+    float *results_shared=shared_mem+sizeof(float)*blockDim.x;
+
+    //copy pr chunk in shared mem
+    ppr_shared[threadIdx.x]=ppr[idx];
+    results_shared[threadIdx.x]=0;
+
+    __syncthreads();
+
+    //compute
+
+    for (int i = start; i < end; i+WARP_SIZE) {
+        results_shared[rows[i]] += vals[i] * ppr_shared[cols[i]-blockIdx.x * blockDim.x];
+    }
+
+    __syncthreads();
+
+    float result = results_shared[threadIdx.x]*alpha + dang_fact + (!(pers_ver-idx))*(1-alpha);
+    //32 atomicadd in 1 shot using coalescing
+    atomicAdd(&results[idx], result);
 
 }
 
@@ -221,6 +257,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     std::vector<float> semiprocessedVal;
 
     num_of_warp_in_block = block_size/WARP_SIZE;
+    beginning_of_warp_data.push_back(0);
     
     //
     for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){        
@@ -283,12 +320,16 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             }
             
         }
-        assert(thread_start.size()==block_size); //assert(block_size>=num_not_empty_lines);
-
-        std::cout<<"\nThread_start block "<<thread_block_num<<":";
-        for (int a=0; a<thread_start.size();a++){
-          std::cout<<"  "<<thread_start[a];
+        assert(thread_start.size()%WARP_SIZE); //if it's impossible to tune block_size comment this assert
+        
+        bool not_good_params=false;
+        while (thread_start.size()!=block_size){
+            thread_start.push_back(thread_start.size());
+            not_good_params = true;
         }
+
+        if (not_good_params)
+            std::cout << "\nATTENZIONE alcuni warp fanno 0 istruzioni";
 
         //sort segments to waste less memory with 0s
         
@@ -324,11 +365,9 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
         for (int warp_num_in_block=0;warp_num_in_block < num_of_warp_in_block; warp_num_in_block++){
 
-            if (end_of_warp_data.size()!=0){
-                end_of_warp_data.push_back(end_of_warp_data[end_of_warp_data.size()-1]+WARP_SIZE*dataLen[1][warp_num_in_block*WARP_SIZE]);
-            }else{
-                end_of_warp_data.push_back(WARP_SIZE*dataLen[1][warp_num_in_block*WARP_SIZE]);
-            }
+            
+            beginning_of_warp_data.push_back(beginning_of_warp_data[beginning_of_warp_data.size()-1]+dataLen[1][warp_num_in_block*WARP_SIZE]);
+            
             
             for (int iteration=0;iteration<dataLen[1][warp_num_in_block*WARP_SIZE];iteration++){
                 for (int thread_of_block=warp_num_in_block*WARP_SIZE;thread_of_block<(warp_num_in_block+1)*WARP_SIZE;thread_of_block++){
@@ -349,22 +388,8 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         }
 
         total_no_op+=no_op_in_this_block;
+        
         std::cout<<"\nno op in "<<thread_block_num<<" block: "<<no_op_in_this_block<<" that is avg: "<< no_op_in_this_block/block_size;
-
-        std::cout<<"\nBlock "<<thread_block_num<<" data:";
-        std::cout<<"\n";
-        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedX.size();a++){
-          std::cout<<"  "<<processedX[a];
-        }
-        std::cout<<"\n";
-        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedY.size();a++){
-          std::cout<<"  "<<processedY[a];
-        }
-        std::cout<<"\n";
-        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedVal.size();a++){
-          std::cout<<"  "<<processedVal[a];
-        }
-        std::cout<<"\n";
 
         thread_start.clear();
         semiprocessedX.clear();
@@ -395,7 +420,7 @@ float PersonalizedPageRank::euclidean_distance_float(float *x, float *y, const i
 
 void PersonalizedPageRank::alloc_to_gpu_0() {
 
-    cudaMalloc(&d_x, sizeof(double) * x.size());
+    cudaMalloc(&d_x, sizeof(double) * convertedX.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
     //cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
@@ -411,7 +436,7 @@ void PersonalizedPageRank::alloc_to_gpu_0() {
 
 void PersonalizedPageRank::alloc_to_gpu_1() {
 
-    cudaMalloc(&d_x, sizeof(int) * x.size());
+    cudaMalloc(&d_x, sizeof(int) * convertedX.size());
     cudaMalloc(&d_y, sizeof(int) * y.size());
     cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
     //cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
@@ -427,7 +452,19 @@ void PersonalizedPageRank::alloc_to_gpu_1() {
 
 void PersonalizedPageRank::alloc_to_gpu_2() {
 
-    
+    //malloc vectors first to have x32 addresses
+    cudaMalloc(&d_x, sizeof(int) * x.size());
+    cudaMalloc(&d_y, sizeof(int) * y.size());
+    cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
+    cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
+    cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
+
+    cudaMalloc(&d_beginning_of_warp_data, sizeof(int) * beginning_of_warp_data.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
+
+    cudaMemcpy(d_x, &convertedX[0], sizeof(int) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &val_f[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_beginning_of_warp_data, &beginning_of_warp_data[0], sizeof(int) *  beginning_of_warp_data.size(), cudaMemcpyHostToDevice);    
 
 }
 
@@ -471,7 +508,7 @@ void PersonalizedPageRank::init() {
 void PersonalizedPageRank::reset() {
     // Do any GPU reset here, and also transfer data to the GPU;
     pr.clear();
-    if (implementation==0){
+    if (implementation<1){
         // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);        
         newPr.clear();
         for (int i=0; i<V;i++){
@@ -574,42 +611,37 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
     //put all FLOAT variables
     while (!converged && i < max_iterations) {
 
-        //put kernel dangling here
+        float dang_fact = 0;
+        for (int j = 0; j < V; j++){
+            dang_fact += dangling[j] * pr_f[j];
+        }
+        dang_fact *= alpha / V;
         
 
         //set d_newPr full of 0
-        cudaMemset(d_newPr, 0, V*sizeof(float));
+        cudaMemset(d_newPr_f, 0, V*sizeof(float));
 
         // Call the GPU computation.
-        //gpu_calculate_ppr_2<<< BlockNum, block_size,sizeof(float)*block_size>>>(d_y, d_x, d_val, d_pr, dang_factFloat, d_newPr, personalization_vertex, alpha, V);
+        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, dang_fact, personalization_vertex, static_cast<double>(alpha));
 
         d_temp=d_pr;
         d_pr=d_newPr;
         d_newPr=d_temp;
 
-        //automatic sync before this method MAYBE useless because it can use global mem of other kernel
-        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
-        
-        //put kernel dangling here
+        //automatic sync here
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
 
-        //set d_newPr full of 0
-        cudaMemset(d_newPr, 0, V*sizeof(float));
-
-        // Call the GPU computation.
-        //gpu_calculate_ppr_2<<< BlockNum, block_size,sizeof(float)*block_size>>>(d_y, d_x, d_val, d_pr, dang_factFloat, d_newPr, personalization_vertex, alpha, V);
-
-        d_temp=d_pr;
-        d_pr=d_newPr;
-        d_newPr=d_temp;
-
-        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr[0],d_newPr, sizeof(double) * V, cudaMemcpyDeviceToHost);        
-
-        double err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
+        //here we can use a double
+        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
         converged = err <= convergence_threshold;
-        i+=2;
+        i++;
     }
-    //convert float array in double
+
+    //copy results on pr
+    for (int j=0;j<V;j++){
+        pr.push_back(static_cast<double>(pr_f[j]));
+    }
 
 }
 
@@ -626,8 +658,8 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            test_pre_processing();
-            //personalized_page_rank_2(iter);
+            //test_pre_processing();
+            personalized_page_rank_2(iter);
             //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
             //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
@@ -742,7 +774,7 @@ void PersonalizedPageRank::test_pre_processing(){
     }
 
     std::cout<< "\n\nblock_iterations:";
-    for (i=0; i<end_of_warp_data.size();i++){
-        std::cout<< "  " << end_of_warp_data[i];
+    for (i=0; i<beginning_of_warp_data.size();i++){
+        std::cout<< "  " << beginning_of_warp_data[i];
     }
 }

@@ -152,11 +152,11 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<float> pr_f;
     std::vector<float> newPr_f;
 
-    //Implementation 2
+    // Implementation 2
     std::vector<int> processedX;
     std::vector<int> processedY;
     std::vector<float> processedVal; //change in float
-    std::vector<int> end_of_warp_data;
+    std::vector<int> beginning_of_warp_data;
     int num_of_warp_in_block;
 
     int personalization_vertex = 0;
@@ -167,9 +167,19 @@ class PersonalizedPageRank : public Benchmark {
     double precision = 0;     // How many top-20 vertices are correctly retrieved;
     std::string graph_file_path = DEFAULT_GRAPH;
 
-    int *d_x, *d_y, *d_dangling;
-    double *d_val,*d_pr,*d_newPr;    
+    ////kernel pointers
+    // Implementation 0
+    int *d_x, *d_y;
+    double *d_val,*d_pr,*d_newPr;
+
+    // Implementation 1
     float *d_val_f, *d_pr_f, *d_newPr_f;
+
+    // Implementation 2
+    int *d_beginning_of_warp_data;
+
+    // Implementation 3
+    int *d_dangling;
     
 
     void initialize_graph();
