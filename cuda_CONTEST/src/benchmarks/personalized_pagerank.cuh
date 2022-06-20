@@ -151,6 +151,12 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<float> pr_f;
     std::vector<float> newPr_f;
 
+    //Implementation 2
+    std::vector<int> processedX;
+    std::vector<int> processedY;
+    std::vector<double> processedVal; //change in float
+    std::vector<int> block_iterations;
+
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;
     double alpha = DEFAULT_ALPHA;
@@ -160,18 +166,24 @@ class PersonalizedPageRank : public Benchmark {
     std::string graph_file_path = DEFAULT_GRAPH;
 
     int *d_x, *d_y, *d_dangling;
-    double *d_val,*d_pr,*d_newPr;
+    double *d_val,*d_pr,*d_newPr;    
     float *d_val_f, *d_pr_f, *d_newPr_f;
     
 
     void initialize_graph();
     void converter();
-    void alloc_to_gpu();
+    void pre_processing_coo_graph();
+
     void alloc_to_gpu_0();
     void alloc_to_gpu_1();
+    void alloc_to_gpu_2();
+
     float euclidean_distance_float(float *x, float *y, int N);
+    
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
     void personalized_page_rank_1(int iter);
+    void personalized_page_rank_2(int iter);
+    
 
 };

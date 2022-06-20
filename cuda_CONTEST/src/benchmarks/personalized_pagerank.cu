@@ -89,6 +89,10 @@ __global__ void gpu_calculate_ppr_1(
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
 }
 
+__global__ void gpu_calculate_ppr_2(){
+
+}
+
 //////////////////////////////
 //////////////////////////////
 
@@ -135,7 +139,7 @@ void PersonalizedPageRank::initialize_graph() {
     // Divide each edge value by the outdegree of the source vertex;
     for (int i = 0; i < E; i++) {
         val[i] = 1.0 / outdegree[y[i]];
-        val_f[i] = 1.0 / outdegree[y[i]];
+        val_f.push_back(1.0 / outdegree[y[i]]);
     }
     free(outdegree);
 }
@@ -193,6 +197,145 @@ void PersonalizedPageRank::converter(){
 
 }
 
+
+//it returns num of iterations that each block must do
+//it needs convertedX, x, y, val, pr and fill the processedX,processedY, processedVal,processedPr
+void PersonalizedPageRank::pre_processing_coo_graph(){
+    //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
+    assert(E>0 && V>=block_size);
+    assert(block_size%32==0);
+    
+    /* processedPr.assign(pr.begin(), pr.end());
+    //because p is splitted in block_size segments but no one will access these values
+    for (int i=0;i<V%block_size;i++) {
+        processedPr.push_back(0);
+    } */
+
+    int count;
+    long total_no_op=0;
+    std::vector<int> no_op_in_block(BlockNum,0);
+    std::vector<int> thread_start;
+
+    block_iterations.assign(no_op_in_block.begin(), no_op_in_block.end());
+
+    
+    //
+    for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){        
+
+        for (count=0;count<convertedX.size()-1;count++){
+            
+            if (thread_start.size()<block_size){
+                bool not_empty_line_section=false;
+                int thread_start_pos=processedX.size();
+                
+                for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){
+                    processedX.push_back(x[i]);
+                    processedY.push_back(y[i]);
+                    processedVal.push_back(val[i]);
+                    not_empty_line_section=true;
+                }
+                if (not_empty_line_section)
+                    thread_start.push_back(thread_start_pos);
+            }else{
+                //concat new data to the shortest thread execution
+                int insert_position=0,thread_num=0;
+
+                for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){                    
+
+                    //first time inside for u have to find where to put this segment
+                    if (i==convertedX[count]){                        
+                        //find shortest section
+                        int j,shortest_exe = 2147483647;
+                        for (j=0;j<block_size-1;j++){
+                            if (thread_start[j+1]-thread_start[j]<shortest_exe){                                
+                                insert_position=thread_start[j+1];                                
+                                shortest_exe=thread_start[j+1]-thread_start[j];
+                                thread_num=j;
+                            }
+                        }
+                        //check last thread seq:
+                        j++;
+                        if (processedX.size()-thread_start[j]<shortest_exe){                                
+                            insert_position=processedX.size();                                
+                            shortest_exe=processedX.size()-thread_start[j];
+                            thread_num=j;
+                        }
+                        assert(insert_position!=0);
+                    }
+
+                    processedX.insert(processedX.begin() + insert_position,x[i]);
+                    processedY.insert(processedY.begin() + insert_position,y[i]);
+                    processedVal.insert(processedVal.begin() + insert_position,val[i]);
+
+                    insert_position++;
+                }
+
+                //change next threads starting
+                int length_segment_added=insert_position-thread_start[thread_num];
+                for (int j=thread_num+1;j<block_size && insert_position!=0;j++){
+                    thread_start[j]=thread_start[j]+length_segment_added;
+                }
+            }
+            
+        }
+        assert(thread_start.size()==block_size); //assert(block_size>=num_not_empty_lines);
+        
+        //make all segment of the same block same lenght adding val=0
+
+        //compute max len of segments
+        int j;
+        for (j=0;j<block_size-1;j++){
+            if (thread_start[j+1]-thread_start[j]<block_iterations[thread_block_num]){           
+                block_iterations[thread_block_num]=thread_start[j+1]-thread_start[j];
+            }
+        }
+        //check last thread seq:
+        j++;
+        if (processedX.size()-thread_start[j]<block_iterations[thread_block_num]){                                                         
+            block_iterations[thread_block_num]=processedX.size()-thread_start[j];
+        }
+
+        //adding val=0
+        int no_op_in_this_thread,insertion_pos;
+
+        for(j=0;j<block_size-1;j++){
+            no_op_in_this_thread=block_iterations[thread_block_num]-(thread_start[j+1]-thread_start[j]);
+            insertion_pos = thread_start[j+1]+no_op_in_block[thread_block_num];
+
+            for (int x=0;x<no_op_in_this_thread;x++){
+                
+                processedX.insert(processedX.begin() + insertion_pos,processedX[insertion_pos-1]);
+                processedY.insert(processedY.begin() + insertion_pos,processedY[insertion_pos-1]);
+                processedVal.insert(processedVal.begin() + insertion_pos,0);
+                
+                insertion_pos++;
+            }
+            no_op_in_block[thread_block_num]+=no_op_in_this_thread;
+            total_no_op+=no_op_in_this_thread;
+        }
+        j++;
+        no_op_in_this_thread=block_iterations[thread_block_num]-(processedX.size()-(no_op_in_block[thread_block_num]+thread_start[j]));
+        insertion_pos = processedX.size();
+        for (int x=0;x<no_op_in_this_thread;x++){                                                        
+            processedX.push_back(processedX[insertion_pos-1]);
+            processedY.push_back(processedY[insertion_pos-1]);
+            processedVal.push_back(0);
+        }       
+        no_op_in_block[thread_block_num]+=no_op_in_this_thread;
+        total_no_op+=no_op_in_this_thread;
+
+        thread_start.clear();
+    }
+    
+    //Print avg no operations in blocks
+    std::cout<< "avg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n";
+    //can use no_op_in_block to know more info
+
+    no_op_in_block.clear();
+
+}
+
+
 float PersonalizedPageRank::euclidean_distance_float(float *x, float *y, const int N) {
     float result = 0;
     for (int i = 0; i < N; i++) {
@@ -202,19 +345,23 @@ float PersonalizedPageRank::euclidean_distance_float(float *x, float *y, const i
     return std::sqrt(result);
 }
 
+//////////////////////////////
+//////////////////////////////
+
+
 void PersonalizedPageRank::alloc_to_gpu_0() {
 
     cudaMalloc(&d_x, sizeof(double) * x.size());
     cudaMalloc(&d_y, sizeof(double) * y.size());
     cudaMalloc(&d_val, sizeof(double) * val.size());
-    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
+    //cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
     cudaMalloc(&d_pr, sizeof(double) * V);
     cudaMalloc(&d_newPr, sizeof(double) * V);
 
     cudaMemcpy(d_x, &convertedX[0], sizeof(double) * convertedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(double) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val, &val[0], sizeof(double) *  val.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+    //cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
 
 }
 
@@ -223,35 +370,22 @@ void PersonalizedPageRank::alloc_to_gpu_1() {
     cudaMalloc(&d_x, sizeof(int) * x.size());
     cudaMalloc(&d_y, sizeof(int) * y.size());
     cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
-    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
+    //cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
     cudaMalloc(&d_pr_f, sizeof(float) * V);
     cudaMalloc(&d_newPr_f, sizeof(float) * V);
 
     cudaMemcpy(d_x, &convertedX[0], sizeof(int) * convertedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val_f, &val_f[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+    //cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
 
 }
 
-void PersonalizedPageRank::alloc_to_gpu() {
+void PersonalizedPageRank::alloc_to_gpu_2() {
 
-     switch (implementation) {
-        case 0:
-            alloc_to_gpu_0();
-            break;
-        case 1:
-            alloc_to_gpu_1();
-            break;
-        default:
-            break;
-    }
+    
 
 }
-
-
-//////////////////////////////
-//////////////////////////////
 
 // Allocate data on the CPU and GPU;
 void PersonalizedPageRank::alloc() {
@@ -261,11 +395,25 @@ void PersonalizedPageRank::alloc() {
     //convert COO in CSR
     converter();
 
-    // Compute the number of blocks for implementations where the value is a function of the input size;
-    BlockNum = (V + block_size - 1) / block_size;
+    // Compute the number of blocks for implementations where the value is a function of the input size;    
+    BlockNum = (V - V%block_size) / block_size;
+    if (V%block_size!=0)
+        BlockNum ++;
 
-    // Allocate any GPU data here;
-    alloc_to_gpu();
+    switch (implementation)
+    {
+    case 0:
+        alloc_to_gpu_0();
+        break;
+    case 1:
+        alloc_to_gpu_1();
+        break;
+    case 2:
+        pre_processing_coo_graph();
+        alloc_to_gpu_2();
+    default:
+        break;
+    }
 }
 
 // Initialize data;
@@ -278,64 +426,38 @@ void PersonalizedPageRank::init() {
 // Reset the result, and transfer data to the GPU if necessary;
 void PersonalizedPageRank::reset() {
     // Do any GPU reset here, and also transfer data to the GPU;
-
-    // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);
     pr.clear();
-    newPr.clear();
-    for (int i=0; i<V;i++){
-        pr.push_back(1.0 / V);
-        newPr.push_back(1.0 / V);
+    if (implementation==0){
+        // Reset the PageRank vector (uniform initialization, 1 / V for each vertex);        
+        newPr.clear();
+        for (int i=0; i<V;i++){
+            pr.push_back(1.0 / V);
+            newPr.push_back(1.0 / V);
+        }
+        // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
+        //cudaMemcpy(d_pr, &pr[0], sizeof(double) * V, cudaMemcpyHostToDevice);
+        cudaMemset(d_pr, 1.0 / V, V*sizeof(double));
+    }else{
+        pr_f.clear();
+        newPr_f.clear();
+        for (int i=0; i<V;i++){
+            pr_f.push_back(1.0 / V);
+            newPr_f.push_back(1.0 / V);
+        }
+        // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
+        cudaMemset(d_pr_f, (float)1 / (float)V, V*sizeof(float));
     }
-
 
     // Generate a new personalization vertex for this iteration;
     personalization_vertex = rand() % V;
     if (debug) std::cout << "personalization vertex=" << personalization_vertex << std::endl;
 
-    // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
-    //if it's so stupid we don't need to copy but just set it or even find a way to begin without passing thisdata
-    cudaMemcpy(d_pr, &pr[0], sizeof(double) * V, cudaMemcpyHostToDevice);
-
-}
-
-void PersonalizedPageRank::personalized_page_rank_1(int iter){
-    bool converged = false;
-    float *d_temp;
-    int i = 0;
-    int BlockNum=(V+1)/block_size; //change this function!
-
-    while (!converged && i < max_iterations) {
-
-        float dang_fact = 0;
-        for (int j = 0; j < V; j++){
-            dang_fact += dangling[j] * pr_f[j];
-        }
-        dang_fact *= alpha / V;
-        // Call the GPU computation.
-        gpu_calculate_ppr_1<<< BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, alpha, V);
-
-
-        d_temp=d_pr_f;
-        d_pr_f=d_newPr_f;
-        d_newPr_f=d_temp;
-
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-
-        //ensure entire pr is calculated
-        cudaDeviceSynchronize();
-
-        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
-        converged = err <= convergence_threshold;
-        i++;
-    }
 }
 
 void PersonalizedPageRank::personalized_page_rank_0(int iter){
     bool converged = false;
     double *d_temp;
     int i = 0;
-    int BlockNum=(V+1)/block_size; //change this function!
 
     while (!converged && i < max_iterations) {
 
@@ -344,9 +466,9 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
             dang_fact += dangling[j] * pr[j];
         }
         dang_fact *= alpha / V;
+
         // Call the GPU computation.
         gpu_calculate_ppr_0<<< BlockNum, block_size>>>(d_y, d_x, d_val, d_pr, dang_fact, d_newPr, personalization_vertex, alpha, V);
-
 
         d_temp=d_pr;
         d_pr=d_newPr;
@@ -364,6 +486,89 @@ void PersonalizedPageRank::personalized_page_rank_0(int iter){
     }
 }
 
+void PersonalizedPageRank::personalized_page_rank_1(int iter){
+    bool converged = false;
+    float *d_temp;
+    int i = 0;
+
+    while (!converged && i < max_iterations) {
+
+        float dang_fact = 0;
+        for (int j = 0; j < V; j++){
+            dang_fact += dangling[j] * pr_f[j];
+        }
+        dang_fact *= alpha / V;
+
+        // Call the GPU computation.
+        gpu_calculate_ppr_1<<< BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, static_cast<double>(alpha), V);
+
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
+
+        //automatic sync here
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+
+        //here we can use a double
+        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
+        converged = err <= convergence_threshold;
+        i++;
+    }
+
+    //copy results on pr
+    for (int j=0;j<V;j++){
+        pr.push_back(static_cast<double>(pr_f[j]));
+    }
+}
+
+void PersonalizedPageRank::personalized_page_rank_2(int iter){
+    bool converged = false;
+    double *d_temp;
+    int i = 0;
+
+    //put all FLOAT variables
+    while (!converged && i < max_iterations) {
+
+        //put kernel dangling here
+        
+
+        //set d_newPr full of 0
+        cudaMemset(d_newPr, 0, V*sizeof(float));
+
+        // Call the GPU computation.
+        //gpu_calculate_ppr_2<<< BlockNum, block_size,sizeof(float)*block_size>>>(d_y, d_x, d_val, d_pr, dang_factFloat, d_newPr, personalization_vertex, alpha, V);
+
+        d_temp=d_pr;
+        d_pr=d_newPr;
+        d_newPr=d_temp;
+
+        //automatic sync before this method MAYBE useless because it can use global mem of other kernel
+        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        
+        //put kernel dangling here
+
+        //set d_newPr full of 0
+        cudaMemset(d_newPr, 0, V*sizeof(float));
+
+        // Call the GPU computation.
+        //gpu_calculate_ppr_2<<< BlockNum, block_size,sizeof(float)*block_size>>>(d_y, d_x, d_val, d_pr, dang_factFloat, d_newPr, personalization_vertex, alpha, V);
+
+        d_temp=d_pr;
+        d_pr=d_newPr;
+        d_newPr=d_temp;
+
+        cudaMemcpy(&pr[0],d_pr, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr[0],d_newPr, sizeof(double) * V, cudaMemcpyDeviceToHost);        
+
+        double err = euclidean_distance_cpu(&newPr[0], &pr[0], V);
+        converged = err <= convergence_threshold;
+        i+=2;
+    }
+    //convert float array in double
+
+}
+
 // Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
 
@@ -372,8 +577,18 @@ void PersonalizedPageRank::execute(int iter) {
             personalized_page_rank_0(iter);
             break;
         case 1:
+            //use float
             personalized_page_rank_1(iter);
             break;
+        case 2:
+            //use shared mem but it needs coo
+            personalized_page_rank_2(iter);
+            break;
+        case 3:
+            //euclidean and dangling in gpu
+        case 4: //euclidean 1 every 2 cycles
+        case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu to cpu only those values with their position (40*4Byte)
+        //even the casting is done only on these 20 values
         default:
             break;
     }
@@ -443,6 +658,5 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
 
 void PersonalizedPageRank::clean() {
     // Delete any GPU data or additional CPU data;
-
 
 }
