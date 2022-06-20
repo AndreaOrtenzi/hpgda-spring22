@@ -156,7 +156,8 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<int> processedX;
     std::vector<int> processedY;
     std::vector<float> processedVal; //change in float
-    std::vector<int> block_iterations;
+    std::vector<int> end_of_warp_data;
+    int num_of_warp_in_block;
 
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;

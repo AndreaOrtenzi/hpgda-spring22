@@ -201,7 +201,7 @@ void PersonalizedPageRank::converter(){
 
 
 //it returns num of iterations that each block must do
-//it needs convertedX, x, y, val, pr and fill the processedX,processedY, processedVal,processedPr
+//it needs convertedX (free here), x, y, val, pr and fill the processedX,processedY, processedVal,processedPr
 void PersonalizedPageRank::pre_processing_coo_graph(){
     //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
     assert(E>0 && V>=block_size);
@@ -213,28 +213,30 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         processedPr.push_back(0);
     } */
 
-    int count;
+    int count,dataLen[2][block_size];
     long total_no_op=0;
-    std::vector<int> no_op_in_block(BlockNum,0);
     std::vector<int> thread_start;
+    std::vector<int> semiprocessedX;
+    std::vector<int> semiprocessedY;
+    std::vector<float> semiprocessedVal;
 
-    block_iterations.assign(no_op_in_block.begin(), no_op_in_block.end());
+    num_of_warp_in_block = block_size/WARP_SIZE;
     
     //
     for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){        
-
+        
         for (count=0;count<convertedX.size()-1;count++){
             
             if (thread_start.size()<block_size){
                 bool not_empty_line_section=false;
-                int thread_start_pos=processedX.size();
+                int thread_start_pos=semiprocessedX.size();
                 
                 for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){
                     if (y[i]<block_size*thread_block_num)
                         continue;
-                    processedX.push_back(x[i]);
-                    processedY.push_back(y[i]);
-                    processedVal.push_back(val_f[i]);
+                    semiprocessedX.push_back(x[i]);
+                    semiprocessedY.push_back(y[i]);
+                    semiprocessedVal.push_back(val_f[i]);
                     not_empty_line_section=true;                    
                 }
                 if (not_empty_line_section)
@@ -258,17 +260,17 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
                             }
                         }
                         //check last thread seq:
-                        if (processedX.size()-thread_start[j]<shortest_exe){                                
-                            insert_position=processedX.size();                                
-                            shortest_exe=processedX.size()-thread_start[j];
+                        if (semiprocessedX.size()-thread_start[j]<shortest_exe){                                
+                            insert_position=semiprocessedX.size();                                
+                            shortest_exe=semiprocessedX.size()-thread_start[j];
                             thread_num=j;
                         }
                         assert(insert_position!=0);
                     }
 
-                    processedX.insert(processedX.begin() + insert_position,x[i]);
-                    processedY.insert(processedY.begin() + insert_position,y[i]);
-                    processedVal.insert(processedVal.begin() + insert_position,val_f[i]);
+                    semiprocessedX.insert(semiprocessedX.begin() + insert_position,x[i]);
+                    semiprocessedY.insert(semiprocessedY.begin() + insert_position,y[i]);
+                    semiprocessedVal.insert(semiprocessedVal.begin() + insert_position,val_f[i]);
 
                     length_segment_added++;
 
@@ -282,81 +284,98 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             
         }
         assert(thread_start.size()==block_size); //assert(block_size>=num_not_empty_lines);
-        
+
         std::cout<<"\nThread_start block "<<thread_block_num<<":";
         for (int a=0; a<thread_start.size();a++){
           std::cout<<"  "<<thread_start[a];
         }
 
-        //make all segment of the same block same lenght adding val=0
-
-        //compute max len of segments
+        //sort segments to waste less memory with 0s
+        
+        //create dataLen matrix [[threadNumOfBlock][lenOfDataToProcess]]
         int j;
         for (j=0;j<block_size-1;j++){
-            if (thread_start[j+1]-thread_start[j]>block_iterations[thread_block_num]){           
-                block_iterations[thread_block_num]=thread_start[j+1]-thread_start[j];
-            }
+            dataLen[0][j]=j;
+            dataLen[1][j]=thread_start[j+1]-thread_start[j];
         }
-        //check last thread seq:
-        if (processedX.size()-thread_start[j]>block_iterations[thread_block_num]){                                                         
-            block_iterations[thread_block_num]=processedX.size()-thread_start[j];
-        }
-        assert(block_iterations[thread_block_num]!=0);
-        std::cout<<"\nmax len segment: "<<block_iterations[thread_block_num];
-        //adding val=0
-        int no_op_in_this_thread,insertion_pos;
+        dataLen[0][j]=j;
+        dataLen[1][j]=semiprocessedX.size()-thread_start[j];
 
-        for(j=0;j<block_size-1;j++){
-            no_op_in_this_thread=block_iterations[thread_block_num]-(thread_start[j+1]-thread_start[j]);
-            insertion_pos = thread_start[j+1]+no_op_in_block[thread_block_num];
-            
-            std::cout<<"\nno op in "<<j<<" thread: "<<no_op_in_this_thread<<" insertion_pos: "<<insertion_pos;
-            
-            for (int x=0;x<no_op_in_this_thread;x++){
-                
-                processedX.insert(processedX.begin() + insertion_pos,processedX[insertion_pos-1-x]);
-                processedY.insert(processedY.begin() + insertion_pos,processedY[insertion_pos-1-x]);
-                processedVal.insert(processedVal.begin() + insertion_pos,0);
-                
-                insertion_pos++;
+        //sort dataLen
+        bool sorted=false;
+        while(!sorted){
+            sorted=true;
+            for (int a=1;a<block_size;a++){
+                int tempL,tempT;
+                if (dataLen[1][a-1]<dataLen[1][a]){
+                    sorted=false;
+                    tempL=dataLen[1][a];
+                    tempT=dataLen[0][a];
+                    dataLen[1][a]=dataLen[1][a-1];
+                    dataLen[0][a]=dataLen[0][a-1];
+                    dataLen[1][a-1]=tempL;
+                    dataLen[0][a-1]=tempT;
+                }
             }
-            no_op_in_block[thread_block_num]+=no_op_in_this_thread;
-            total_no_op+=no_op_in_this_thread;
         }
-        no_op_in_this_thread=block_iterations[thread_block_num]-(processedX.size()-(no_op_in_block[thread_block_num]+thread_start[j]));
-        insertion_pos = processedX.size();
-        std::cout<<"\nno op in "<<j<<" thread: "<<no_op_in_this_thread<<" insertion_pos: "<<insertion_pos;
-        for (int x=0;x<no_op_in_this_thread;x++){                                                        
-            processedX.push_back(processedX[insertion_pos-1]);
-            processedY.push_back(processedY[insertion_pos-1]);
-            processedVal.push_back(0);
-        }       
-        no_op_in_block[thread_block_num]+=no_op_in_this_thread;
-        total_no_op+=no_op_in_this_thread;
+
+        //append to processed variables in better order
+        int no_op_in_this_block=0;
+
+        for (int warp_num_in_block=0;warp_num_in_block < num_of_warp_in_block; warp_num_in_block++){
+
+            if (end_of_warp_data.size()!=0){
+                end_of_warp_data.push_back(end_of_warp_data[end_of_warp_data.size()-1]+WARP_SIZE*dataLen[1][warp_num_in_block*WARP_SIZE]);
+            }else{
+                end_of_warp_data.push_back(WARP_SIZE*dataLen[1][warp_num_in_block*WARP_SIZE]);
+            }
+            
+            for (int iteration=0;iteration<dataLen[1][0];iteration++){
+                for (int thread_of_block=warp_num_in_block*WARP_SIZE;thread_of_block<(warp_num_in_block+1)*WARP_SIZE;thread_of_block++){
+                    
+                    if (iteration < dataLen[1][thread_of_block]){
+                        processedX.push_back(semiprocessedX[thread_start[dataLen[0][thread_of_block]]+iteration]);
+                        processedY.push_back(semiprocessedY[thread_start[dataLen[0][thread_of_block]]+iteration]);
+                        processedVal.push_back(semiprocessedVal[thread_start[dataLen[0][thread_of_block]]+iteration]);
+                    }else{
+                        //copy last x and y with value=0
+                        processedX.push_back(semiprocessedX[thread_start[dataLen[0][thread_of_block]]+dataLen[1][thread_of_block]-1]);
+                        processedY.push_back(semiprocessedY[thread_start[dataLen[0][thread_of_block]]+dataLen[1][thread_of_block]-1]);
+                        processedVal.push_back(0);
+                        no_op_in_this_block++;
+                    }
+                }
+            }
+        }
+
+        total_no_op+=no_op_in_this_block;
+        std::cout<<"\nno op in "<<thread_block_num<<" block: "<<no_op_in_this_block<<" that is avg: "<< no_op_in_this_block/block_size;
 
         std::cout<<"\nBlock "<<thread_block_num<<" data:";
         std::cout<<"\n";
-        for (int a=thread_start[0]; a<processedX.size();a++){
+        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedX.size();a++){
           std::cout<<"  "<<processedX[a];
         }
         std::cout<<"\n";
-        for (int a=thread_start[0]; a<processedY.size();a++){
+        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedY.size();a++){
           std::cout<<"  "<<processedY[a];
         }
         std::cout<<"\n";
-        for (int a=thread_start[0]; a<processedVal.size();a++){
+        for (int a=end_of_warp_data[end_of_warp_data.size()-num_of_warp_in_block];a<processedVal.size();a++){
           std::cout<<"  "<<processedVal[a];
         }
         std::cout<<"\n";
 
         thread_start.clear();
+        semiprocessedX.clear();
+        semiprocessedY.clear();
+        semiprocessedVal.clear();
     }
     
     //Print avg no operations in blocks
     std::cout<< "\navg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n";
-    //can use no_op_in_block to know more info
 
-    no_op_in_block.clear();
+    convertedX.clear();
 
 }
 
@@ -723,7 +742,7 @@ void PersonalizedPageRank::test_pre_processing(){
     }
 
     std::cout<< "\n\nblock_iterations:";
-    for (i=0; i<block_iterations.size();i++){
-        std::cout<< "  " << block_iterations[i];
+    for (i=0; i<end_of_warp_data.size();i++){
+        std::cout<< "  " << end_of_warp_data[i];
     }
 }
