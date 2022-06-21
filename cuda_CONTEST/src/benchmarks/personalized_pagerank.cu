@@ -725,8 +725,8 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         d_pr_f=d_newPr_f;
         d_newPr_f=d_temp;
 
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(double) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
 
         //ensure entire pr is calculated
         cudaDeviceSynchronize();
