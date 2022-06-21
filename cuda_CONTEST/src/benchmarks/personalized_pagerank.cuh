@@ -173,7 +173,7 @@ class PersonalizedPageRank : public Benchmark {
     double *d_val,*d_pr,*d_newPr;
 
     // Implementation 1
-    float *d_val_f, *d_pr_f, *d_newPr_f, *diff_f, *err_sum;
+    float *d_val_f, *d_pr_f, *d_newPr_f, *d_diff_f, *err_sum;
 
     // Implementation 2
     int *d_beginning_of_warp_data;

@@ -42,7 +42,6 @@ using clock_type = chrono::high_resolution_clock;
 // Write GPU kernel here!
 
 // Used to sum the values in a warp;
-#define WARP_SIZE 32
 __inline__ __device__ double warp_reduce(double val) {
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
         val += __shfl_down_sync(0xFFFFFFFF, val, offset);
@@ -95,7 +94,7 @@ __global__ void gpu_calculate_ppr_1(
     float* result,
     int pers_ver,
     float alpha,
-    int V
+    int V,
     float* diff)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -110,7 +109,7 @@ __global__ void gpu_calculate_ppr_1(
 
     //__syncthreads();    atomicAdd(res, sum);
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
-    diff[idx] = (result[idx] - p[idx]) * (result[idx] - p[idx])
+    diff[idx] = (result[idx] - p[idx]) * (result[idx] - p[idx]);
 }
 
 __global__ void gpu_calculate_ppr_2(
@@ -465,8 +464,8 @@ void PersonalizedPageRank::alloc_to_gpu_1() {
     //cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
     cudaMalloc(&d_pr_f, sizeof(float) * V);
     cudaMalloc(&d_newPr_f, sizeof(float) * V);
-    cudaMalloc(&diff_f, sizeof(float) * V);
-    cudaMalloc(&err_sum, sizeof(float) * V);
+    cudaMalloc(&d_diff_f, sizeof(float) * V);
+    cudaMalloc(&err_sum, sizeof(float) * BlockNum);
 
     cudaMemcpy(d_x, &convertedX[0], sizeof(int) * convertedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
@@ -490,7 +489,8 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMemcpy(d_y, &processedY[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_beginning_of_warp_data, &beginning_of_warp_data[0], sizeof(int) *  beginning_of_warp_data.size(), cudaMemcpyHostToDevice);    
-
+    cudaMemset(d_pr_f, 0, block_size*BlockNum);
+    cudaMemset(d_newPr_f, 0, block_size*BlockNum);
 }
 
 // Allocate data on the CPU and GPU;
@@ -606,7 +606,7 @@ void PersonalizedPageRank::personalized_page_rank_1(int iter){
         dang_fact *= alpha / V;
 
         // Call the GPU computation.
-        gpu_calculate_ppr_1<<<BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, static_cast<double>(alpha), V, diff_f);
+        gpu_calculate_ppr_1<<<BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, static_cast<float>(alpha), V, d_diff_f);
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -614,16 +614,17 @@ void PersonalizedPageRank::personalized_page_rank_1(int iter){
 
         //automatic sync here
         cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
 
         //here we can use a double
         //float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
-        gpu_vector_sum_2<<<BlockNum, block_size>>>(diff_f, err_sum, V);
+        gpu_vector_sum_2<<<BlockNum, block_size>>>(d_diff_f, err_sum, V);
+        //changed err_sum size, now BlockNum        
 
         converged = err <= convergence_threshold;
         i++;
     }
 
+    
     //copy results on pr
     for (int j=0;j<V;j++){
         pr.push_back(static_cast<double>(pr_f[j]));
@@ -649,7 +650,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         cudaMemset(d_newPr_f, 0, V*sizeof(float));
 
         // Call the GPU computation.
-        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, dang_fact, personalization_vertex, static_cast<double>(alpha));
+        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, dang_fact, personalization_vertex, static_cast<float>(alpha));
 
         d_temp=d_pr;
         d_pr=d_newPr;
