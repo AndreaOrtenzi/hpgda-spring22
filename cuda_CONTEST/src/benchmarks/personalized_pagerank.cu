@@ -162,7 +162,7 @@ __global__ void gpu_calculate_ppr_2(
 
     //compute
 
-    for (int i = start; i < end; i+WARP_SIZE) {
+    for (int i = start; i < end; i+=WARP_SIZE) {
         results_shared[rows[i]%blockDim.x] += vals[i] * ppr_shared[cols[i] % blockDim.x];
     }
 
@@ -720,18 +720,22 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
 
         // Call the GPU computation.
         gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, d_diff_f, dang_fact, personalization_vertex, static_cast<float>(alpha));
-        /* 
-        for (int block=0;block<BlockNum;block++){
-            std::vector<float> shared_mem(2*block_size,0);
-            for (int thread=0;thread<block_size;thread++){
-                cpu_calculate_ppr_2 (&processedY[0], &processedX[0], &processedVal[0], &pr_f[0], &newPr_f[0], &beginning_of_warp_data[0], dang_fact, personalization_vertex, static_cast<float>(alpha),thread,block,block_size,&shared_mem[0]);
-            }
-            shared_mem.clear();
-        }
-
-        pr.swap(newPr);
         
- */
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
+
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(double) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(double) * V, cudaMemcpyDeviceToHost);
+
+        //ensure entire pr is calculated
+        cudaDeviceSynchronize();
+
+        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
+        converged = err <= convergence_threshold;
+        i++;
+        
+ /* 
         cudaDeviceSynchronize();
 
         gpu_vector_power_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, d_newPr_f,V);//it should copy d_newPr_f in d_diff_f after the computation
@@ -744,6 +748,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
 
         converged = std::sqrt(err_sum) <= convergence_threshold;
         i++;
+         */
     }
 
     
