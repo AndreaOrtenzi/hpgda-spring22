@@ -249,20 +249,20 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         processedPr.push_back(0);
     } */
 
-    int count,dataLen[2][block_size];
     long total_no_op=0;
-    std::vector<int> thread_start;
-    std::vector<int> semiprocessedX;
-    std::vector<int> semiprocessedY;
-    std::vector<float> semiprocessedVal;
 
     num_of_warp_in_block = block_size/WARP_SIZE;
     beginning_of_warp_data.push_back(0);
     
     //
-    for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){        
+    for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){  
+        std::vector<int> thread_start;
+        std::vector<int> semiprocessedX;
+        std::vector<int> semiprocessedY;
+        std::vector<float> semiprocessedVal;
+        int dataLen[2][block_size];   
         
-        for (count=0;count<convertedX.size()-1;count++){
+        for (int count=0;count<convertedX.size()-1;count++){
             
             if (thread_start.size()<block_size){
                 bool not_empty_line_section=false;
@@ -320,11 +320,12 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             }
             
         }
-        assert(thread_start.size()%WARP_SIZE); //if it's impossible to tune block_size comment this assert
-        
+        assert(thread_start.size()%WARP_SIZE==0); //if it's impossible to tune block_size comment this assert but you'll lose performance. (some threads in a warp won't work and add a lot of 0s)
+
+        assert(thread_start.size()!=0);//if this is triggered one entire block is useless. Now try to decrease blocksize but for the future merge this data with the next
         bool not_good_params=false;
         while (thread_start.size()!=block_size){
-            thread_start.push_back(thread_start.size());
+            thread_start.push_back(semiprocessedX.size());
             not_good_params = true;
         }
 
@@ -398,7 +399,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     }
     
     //Print avg no operations in blocks
-    std::cout<< "\navg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n";
+    std::cout<< "\n\navg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n\n";
 
     convertedX.clear();
 
@@ -453,17 +454,17 @@ void PersonalizedPageRank::alloc_to_gpu_1() {
 void PersonalizedPageRank::alloc_to_gpu_2() {
 
     //malloc vectors first to have x32 addresses
-    cudaMalloc(&d_x, sizeof(int) * x.size());
-    cudaMalloc(&d_y, sizeof(int) * y.size());
-    cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
+    cudaMalloc(&d_x, sizeof(int) * processedX.size());
+    cudaMalloc(&d_y, sizeof(int) * processedY.size());
+    cudaMalloc(&d_val_f, sizeof(float) * processedVal.size());
     cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
     cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
 
     cudaMalloc(&d_beginning_of_warp_data, sizeof(int) * beginning_of_warp_data.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
 
-    cudaMemcpy(d_x, &convertedX[0], sizeof(int) * x.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_val_f, &val_f[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, &processedX[0], sizeof(int) * x.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &processedY[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_beginning_of_warp_data, &beginning_of_warp_data[0], sizeof(int) *  beginning_of_warp_data.size(), cudaMemcpyHostToDevice);    
 
 }
@@ -741,40 +742,40 @@ void PersonalizedPageRank::clean() {
 }
 
 void PersonalizedPageRank::test_pre_processing(){
-    assert(V<20);
     int i;
     std::cout<< "\nconvertedX:";
-    for (i=0; i<convertedX.size();i++){
+    for (i=0; i<convertedX.size()&&i<40;i++){
         std::cout<< "  " <<convertedX[i];
     }
     std::cout<< "\nx:";
-    for (i=0; i<x.size();i++){
+    for (i=0; i<x.size()&&i<40;i++){
         std::cout<< "  " << x[i];
     }
     std::cout<< "\ny:";
-    for (i=0; i<y.size();i++){
+    for (i=0; i<y.size()&&i<40;i++){
         std::cout<< "  " << y[i];
     }
     std::cout<< "\nval:";
-    for (i=0; i<val_f.size();i++){
+    for (i=0; i<val_f.size()&&i<40;i++){
         std::cout<< "  " << val_f[i];
     }
 
-    std::cout<< "\n\nprocessedX:";
-    for (i=0; i<40;i++){
+    std::cout<< "\n\nprocessed vectors size: "<<processedX.size();
+    std::cout<< "\nprocessedX:";
+    for (i=0; i<40&&processedX.size();i++){
         std::cout<< "  " << processedX[i];
     }
     std::cout<< "\nprocessedY:";
-    for (i=0; i<40;i++){
+    for (i=0; i<40&&processedY.size();i++){
         std::cout<< "  " << processedY[i];
     }
     std::cout<< "\nprocessedVal:";
-    for (i=0; i<40;i++){
+    for (i=0; i<40&&processedVal.size();i++){
         std::cout<< "  " << processedVal[i];
     }
 
     std::cout<< "\n\nblock_iterations:";
-    for (i=0; i<beginning_of_warp_data.size();i++){
+    for (i=0; i<beginning_of_warp_data.size()&&i<40;i++){
         std::cout<< "  " << beginning_of_warp_data[i];
     }
 }
