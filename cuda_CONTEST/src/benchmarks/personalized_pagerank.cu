@@ -60,7 +60,7 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
-__global__ void gpu_vector_prod(float *x, float *y, float *res, int N) {
+__global__ void gpu_vector_prod(int *x, float *y, float *res, int N) {
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
         sum += x[i] * y[i];
@@ -159,6 +159,32 @@ __global__ void gpu_calculate_ppr_2(
     //32 atomicadd in 1 shot using coalescing
     atomicAdd(&results[idx], result);
 
+}
+
+__global__ void gpu_calculate_ppr_3(
+    int *cols_idx,
+    int* ptr,
+    float* val,
+    float* p,
+    float dang_fact,
+    float* result,
+    int pers_ver,
+    float alpha,
+    int V,
+    float* diff)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int start = ptr[idx];
+    int end = ptr[idx + 1];
+
+    float prod_fact = 0;
+    for (int i = start; i < end; i++) {
+        prod_fact += val[i] * p[cols_idx[i]];
+    }
+    prod_fact *= alpha;
+
+    result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
+    diff[idx] = (result[idx] - p[idx]) * (result[idx] - p[idx]);
 }
 
 //////////////////////////////
@@ -502,6 +528,25 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMemset(d_newPr_f, 0, block_size*BlockNum);
 }
 
+void PersonalizedPageRank::alloc_to_gpu_3() {
+
+    cudaMalloc(&d_x, sizeof(int) * convertedX.size());
+    cudaMalloc(&d_y, sizeof(int) * y.size());
+    cudaMalloc(&d_val_f, sizeof(float) * val_f.size());
+    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
+    cudaMalloc(&d_dang_res, sizeof(float) * dangling.size());
+    cudaMalloc(&d_pr_f, sizeof(float) * V);
+    cudaMalloc(&d_newPr_f, sizeof(float) * V);
+    cudaMalloc(&d_diff_f, sizeof(float) * V);
+    cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
+
+    cudaMemcpy(d_x, &convertedX[0], sizeof(int) * convertedX.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &y[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &val_f[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+
+}
+
 // Allocate data on the CPU and GPU;
 void PersonalizedPageRank::alloc() {
     // Load the input graph and preprocess it;
@@ -526,6 +571,9 @@ void PersonalizedPageRank::alloc() {
     case 2:
         pre_processing_coo_graph();
         alloc_to_gpu_2();
+        break;
+    case 3:
+        alloc_to_gpu_3();
     default:
         break;
     }
@@ -679,6 +727,41 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
 
 }
 
+void PersonalizedPageRank::personalized_page_rank_3(int iter){
+    bool converged = false;
+    float *d_temp;
+    int i = 0;
+
+    while (!converged && i < max_iterations) {
+
+        float dang_fact = 0;
+        gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_pr_f, d_dang_res, V);
+        cudaMemcpy(&dang_fact, d_dang_res, sizeof(float), cudaMemcpyDeviceToHost);
+        dang_fact *= alpha / V;
+
+        // Call the GPU computation.
+        gpu_calculate_ppr_3<<<BlockNum, block_size>>>(d_y, d_x, d_val_f, d_pr_f, dang_fact, d_newPr_f, personalization_vertex, static_cast<float>(alpha), V, d_diff_f);
+        cudaDeviceSynchronize();
+
+        gpu_vector_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, V);
+        cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
+
+        converged = std::sqrt(err_sum) <= convergence_threshold;
+        i++;
+    }
+
+    
+    //copy results on pr
+    for (int j=0;j<V;j++){
+        pr.push_back(static_cast<double>(pr_f[j]));
+    }
+}
+
 // Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
 
@@ -699,6 +782,7 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 3:
             //euclidean and dangling in gpu
+            personalized_page_rank_3(iter);
         case 4: //euclidean 1 every 2 cycles
         case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu only those values with their position (40*4Byte)
         //even the casting is done only on these 20 values
