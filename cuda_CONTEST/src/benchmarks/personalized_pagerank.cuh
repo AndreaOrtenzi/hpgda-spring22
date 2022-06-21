@@ -200,5 +200,20 @@ class PersonalizedPageRank : public Benchmark {
     
     //testing
     void test_pre_processing();
-
+    /* 
+    void cpu_calculate_ppr_2(
+    int* cols,
+    int* rows,
+    float* vals,
+    float* ppr,
+    float* results,
+    int* beginning_of_warp_data,
+    float dang_fact,
+    int pers_ver,
+    float alpha,
+    int thx,
+    int blkx,
+    int blkDim,
+    float* shared_mem);
+ */
 };

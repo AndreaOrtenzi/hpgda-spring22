@@ -60,6 +60,17 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
+__global__ void gpu_vector_power_sum (float *x, float *res, float *ppr,int N){
+    double sum = double(0);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
+        sum += x[i]*x[i];
+        x[i]=ppr[i];
+    }
+    sum = warp_reduce(sum);
+    if ((threadIdx.x & (WARP_SIZE - 1)) == 0)
+        atomicAdd(res, sum);     
+}
+
 __global__ void gpu_vector_prod(float *x, float *y, float *res, int N) {
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
@@ -117,6 +128,7 @@ __global__ void gpu_calculate_ppr_1(
     }
     prod_fact *= alpha;
 
+    //__syncthreads();    atomicAdd(res, sum);
     result[idx] = prod_fact + dang_fact + (!(pers_ver-idx))*(1-alpha);
     diff[idx] = (result[idx] - p[idx]) * (result[idx] - p[idx]);
 }
@@ -128,20 +140,21 @@ __global__ void gpu_calculate_ppr_2(
     float* ppr,
     float* results,
     int* beginning_of_warp_data,
+    float* diff,
     float dang_fact,
     int pers_ver,
     float alpha)
 {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    int warp_num =  blockIdx.x * blockDim.x/WARP_SIZE + threadIdx.x/WARP_SIZE;
-    int start = beginning_of_warp_data[warp_num]*WARP_SIZE + blockIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    int warp_num =  static_cast<int>(blockIdx.x * blockDim.x/WARP_SIZE) + static_cast<int>(threadIdx.x/WARP_SIZE);
+    int start = beginning_of_warp_data[warp_num]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
     int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
 
-    extern __shared__ float *shared_mem;
+    extern __shared__ float shared_mem[];
     float *ppr_shared=shared_mem;
-    float *results_shared=shared_mem+sizeof(float)*blockDim.x;
+    float *results_shared=&shared_mem[blockDim.x];
 
-    //copy pr chunk in shared mem
+    //copy ppr chunk in shared mem
     ppr_shared[threadIdx.x]=ppr[idx];
     results_shared[threadIdx.x]=0;
 
@@ -150,17 +163,61 @@ __global__ void gpu_calculate_ppr_2(
     //compute
 
     for (int i = start; i < end; i+WARP_SIZE) {
-        results_shared[rows[i]] += vals[i] * ppr_shared[cols[i]-blockIdx.x * blockDim.x];
+        results_shared[rows[i]%blockDim.x] += vals[i] * ppr_shared[cols[i] % blockDim.x];
     }
 
     __syncthreads();
 
     float result = results_shared[threadIdx.x]*alpha + dang_fact + (!(pers_ver-idx))*(1-alpha);
     //32 atomicadd in 1 shot using coalescing
+    __syncwarp(); //useless I think
+    atomicAdd(&results[idx], result);
+    atomicAdd(&diff[idx],-result);
+}
+/* 
+void PersonalizedPageRank::cpu_calculate_ppr_2(
+    int* cols,
+    int* rows,
+    float* vals,
+    float* ppr,
+    float* results,
+    int* beginning_of_warp_data,
+    float dang_fact,
+    int pers_ver,
+    float alpha,
+    int thx,
+    int blkx,
+    int blkDim,
+    float* shared_mem)
+{
+    int idx = thx + blkx * blkDim;
+    int warp_num =  static_cast<int>(thx * blkx/WARP_SIZE) + static_cast<int>(thx/WARP_SIZE);
+    int start = beginning_of_warp_data[warp_num]*WARP_SIZE + thx; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
+
+    float *ppr_shared=shared_mem;
+    float *results_shared=shared_mem+sizeof(float)*blkDim;
+
+    //copy pr chunk in shared mem
+    ppr_shared[thx]=ppr[idx];
+    results_shared[thx]=0;
+
+    __syncthreads();
+
+    //compute
+
+    for (int i = start; i < end; i+WARP_SIZE) {
+        results_shared[rows[i]%blkDim] += vals[i] * ppr_shared[cols[i] % blkDim];
+    }
+
+    __syncthreads();
+
+    float result = results_shared[thx]*alpha + dang_fact + (!(pers_ver-idx))*(1-alpha);
+    //32 atomicadd in 1 shot using coalescing
     atomicAdd(&results[idx], result);
 
 }
-
+ */
 //////////////////////////////
 //////////////////////////////
 
@@ -491,8 +548,10 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMalloc(&d_val_f, sizeof(float) * processedVal.size());
     cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
     cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
-
+    cudaMalloc(&d_diff_f, sizeof(float) * block_size*BlockNum);
+    
     cudaMalloc(&d_beginning_of_warp_data, sizeof(int) * beginning_of_warp_data.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
+    cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
 
     cudaMemcpy(d_x, &processedX[0], sizeof(int) * x.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &processedY[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
@@ -561,6 +620,10 @@ void PersonalizedPageRank::reset() {
         }
         // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
         cudaMemset(d_pr_f, (float)1 / (float)V, V*sizeof(float));
+
+        if (implementation>1){
+            cudaMemset(d_diff_f, (float)1 / (float)V, V*sizeof(float));
+        }
     }
 
     // Generate a new personalization vertex for this iteration;
@@ -620,11 +683,11 @@ void PersonalizedPageRank::personalized_page_rank_1(int iter){
 
         gpu_vector_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, V);
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);//d_pr_f or d_newPr_f?
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
-        d_newPr_f=d_temp;
+        d_newPr_f=d_temp;      
 
         converged = std::sqrt(err_sum) <= convergence_threshold;
         i++;
@@ -639,7 +702,7 @@ void PersonalizedPageRank::personalized_page_rank_1(int iter){
 
 void PersonalizedPageRank::personalized_page_rank_2(int iter){
     bool converged = false;
-    double *d_temp;
+    float *d_temp;
     int i = 0;
 
     //put all FLOAT variables
@@ -656,22 +719,34 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         cudaMemset(d_newPr_f, 0, V*sizeof(float));
 
         // Call the GPU computation.
-        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, dang_fact, personalization_vertex, static_cast<float>(alpha));
+        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data, d_diff_f, dang_fact, personalization_vertex, static_cast<float>(alpha));
+        /* 
+        for (int block=0;block<BlockNum;block++){
+            std::vector<float> shared_mem(2*block_size,0);
+            for (int thread=0;thread<block_size;thread++){
+                cpu_calculate_ppr_2 (&processedY[0], &processedX[0], &processedVal[0], &pr_f[0], &newPr_f[0], &beginning_of_warp_data[0], dang_fact, personalization_vertex, static_cast<float>(alpha),thread,block,block_size,&shared_mem[0]);
+            }
+            shared_mem.clear();
+        }
 
-        d_temp=d_pr;
-        d_pr=d_newPr;
-        d_newPr=d_temp;
+        pr.swap(newPr);
+        
+ */
+        cudaDeviceSynchronize();
 
-        //automatic sync here
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        gpu_vector_power_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, d_newPr_f,V);//it should copy d_newPr_f in d_diff_f after the computation
+        cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&pr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
 
-        //here we can use a double
-        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
-        converged = err <= convergence_threshold;
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
+
+        converged = std::sqrt(err_sum) <= convergence_threshold;
         i++;
     }
 
+    
     //copy results on pr
     for (int j=0;j<V;j++){
         pr.push_back(static_cast<double>(pr_f[j]));
