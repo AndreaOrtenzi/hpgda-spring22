@@ -181,7 +181,7 @@ class PersonalizedPageRank : public Benchmark {
 
     // Implementation 3
     int *d_dangling;
-    float* d_dang_res;
+    float *d_dang_res;
     
 
     void initialize_graph();

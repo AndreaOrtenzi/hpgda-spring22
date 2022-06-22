@@ -61,7 +61,7 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
-__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,double dang_fact, int pers_ver){
+__global__ void gpu_vector_power_sum(float *pprOld, float *res, float *pprNew,int N,float alpha,double dang_fact, int pers_ver){
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
         pprNew[i] = pprNew[i]*alpha + dang_fact + (!(pers_ver-i))*(1-alpha);
@@ -740,6 +740,10 @@ void PersonalizedPageRank::reset() {
         }
         // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
         cudaMemset(d_pr_f, (float)1/ (float)V, V*sizeof(float));
+        // cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+        if (implementation == 3) {
+            cudaMalloc(&d_dang_res, sizeof(float) * dangling.size());
+        }
     }
 
     // Generate a new personalization vertex for this iteration;
