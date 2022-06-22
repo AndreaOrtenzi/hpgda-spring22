@@ -60,7 +60,7 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
-__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,float dang_fact, float pers_ver){
+__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,float dang_fact, int pers_ver){
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
         pprNew[i] = pprNew[i]*alpha + dang_fact + (!(pers_ver-i))*(1-alpha);
@@ -141,10 +141,10 @@ __global__ void gpu_calculate_ppr_2(
     float* results,
     int* beginning_of_warp_data)
 {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    int warp_num =  static_cast<int>(blockIdx.x * blockDim.x/WARP_SIZE) + static_cast<int>(threadIdx.x/WARP_SIZE);
-    int start = beginning_of_warp_data[warp_num]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
-    int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
+    const int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    const int warp_num =  static_cast<int>(blockIdx.x * blockDim.x/WARP_SIZE) + static_cast<int>(threadIdx.x/WARP_SIZE);
+    const int start = beginning_of_warp_data[warp_num]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    const int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
     int result_index=-1,previous_row,iter_this_warp=beginning_of_warp_data[warp_num+1]-beginning_of_warp_data[warp_num];
     float *partial_results;//a thread can change a line every iteration, this is max allocation. To allocate less space in private mem put in global a vector of num of row processed by each thread
     int *partial_results_row;
@@ -154,8 +154,8 @@ __global__ void gpu_calculate_ppr_2(
     float *results_shared=&shared_mem[blockDim.x];//3 500 000 * 4 = 14 000 000 max 48kb too big
 
     //copy ppr chunk in shared mem
+    //assert(ppr[idx]!=0);//NON LO PASSA?!?!? forse perchè float approx
     ppr_shared[threadIdx.x]=ppr[idx];
-    results_shared[threadIdx.x]=0;
 
     __syncthreads();
     
@@ -175,14 +175,19 @@ __global__ void gpu_calculate_ppr_2(
         result_index += (rows[i]!=previous_row);//avoid if
         partial_results_row[result_index]=rows[i];
         partial_results[result_index] += vals[i] * ppr_shared[cols[i] % blockDim.x];
-        previous_row=rows[i]; //can save in local if enough space in a table of result_index
+        previous_row=rows[i];
+        
     }
 
-    __syncthreads();
+    //__syncthreads();
 
     //write on shared mem block_size values in order and then copy them on global mem
     int j=0;
-    for (int i=0;i<gridDim.x;i++){        
+    for (int i=0;i<gridDim.x;i++){    
+
+        results_shared[threadIdx.x]=0;
+        __syncthreads(); 
+
         while (j<=result_index && partial_results_row[j] > i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x ){
             j++;
             results_shared[ partial_results_row[j] % blockDim.x] = partial_results[j];
@@ -190,8 +195,8 @@ __global__ void gpu_calculate_ppr_2(
         __syncthreads();        
         
         //32 atomicadd in 1 shot using coalescing
-        __syncwarp(); //useless I think
-        atomicAdd(&results[idx], results_shared[threadIdx.x]);
+        //__syncwarp(); //useless I think
+        atomicAdd(&results[i*blockDim.x+threadIdx.x], results_shared[threadIdx.x]);
     }
 
     free(partial_results);
@@ -527,7 +532,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
         total_no_op+=no_op_in_this_block;
         
-        std::cout<<"\nno op in "<<thread_block_num<<" block: "<<no_op_in_this_block<<" that is avg: "<< no_op_in_this_block/block_size;
+        std::cout<<"\nno op in block "<<thread_block_num<<": "<<no_op_in_this_block<<" that is avg: "<< no_op_in_this_block/block_size;
 
         thread_start.clear();
         semiprocessedX.clear();
@@ -606,8 +611,8 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMemcpy(d_y, &processedY[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_beginning_of_warp_data, &beginning_of_warp_data[0], sizeof(int) *  beginning_of_warp_data.size(), cudaMemcpyHostToDevice);    
-    cudaMemset(d_pr_f, 0, block_size*BlockNum);
-    cudaMemset(d_newPr_f, 0, block_size*BlockNum);
+    cudaMemset(d_pr_f, 0.0, sizeof(float) * block_size*BlockNum);
+    cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);
 }
 
 void PersonalizedPageRank::alloc_to_gpu_3() {
@@ -690,11 +695,7 @@ void PersonalizedPageRank::reset() {
             newPr_f.push_back(1.0 / V);
         }
         // Reset the result in GPU and Transfer data to the GPU (cudaMemset(d_pr, 1.0 / V, sizeof(double) * V));
-        cudaMemset(d_pr_f, (float)1 / (float)V, V*sizeof(float));
-
-        if (implementation>1){
-            cudaMemset(d_diff_f, (float)1 / (float)V, V*sizeof(float));
-        }
+        cudaMemset(d_pr_f, (float)1/ (float)V, V*sizeof(float));
     }
 
     // Generate a new personalization vertex for this iteration;
@@ -787,7 +788,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         
 
         //set d_newPr full of 0
-        cudaMemset(d_newPr_f, 0, V*sizeof(float));
+        cudaMemset(d_newPr_f, 0.0, V*sizeof(float));
 
         // Call the GPU computation.
         gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data);
