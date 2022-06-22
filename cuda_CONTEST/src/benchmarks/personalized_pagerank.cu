@@ -32,6 +32,7 @@
 #include "personalized_pagerank.cuh"
 
 #define WARP_SIZE 32
+#define BLOCKNUM 4
 
 namespace chrono = std::chrono;
 using clock_type = chrono::high_resolution_clock;
@@ -60,7 +61,7 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
-__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,float dang_fact, int pers_ver){
+__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,double dang_fact, int pers_ver){
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
         pprNew[i] = pprNew[i]*alpha + dang_fact + (!(pers_ver-i))*(1-alpha);
@@ -188,9 +189,9 @@ __global__ void gpu_calculate_ppr_2(
         results_shared[threadIdx.x]=0;
         __syncthreads(); 
 
-        while (j<=result_index && partial_results_row[j] > i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x ){
-            j++;
+        while (j<=result_index && partial_results_row[j] >= i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x ){
             results_shared[ partial_results_row[j] % blockDim.x] = partial_results[j];
+            j++;
         }
         __syncthreads();        
         
@@ -202,7 +203,7 @@ __global__ void gpu_calculate_ppr_2(
     free(partial_results);
     
 }
-/* 
+
 void PersonalizedPageRank::cpu_calculate_ppr_2(
     int* cols,
     int* rows,
@@ -215,38 +216,81 @@ void PersonalizedPageRank::cpu_calculate_ppr_2(
     float alpha,
     int thx,
     int blkx,
-    int blkDim,
-    float* shared_mem)
+    int blkDim)
 {
     int idx = thx + blkx * blkDim;
     int warp_num =  static_cast<int>(thx * blkx/WARP_SIZE) + static_cast<int>(thx/WARP_SIZE);
     int start = beginning_of_warp_data[warp_num]*WARP_SIZE + thx; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
     int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
+    int result_index=-1,previous_row,iter_this_warp=beginning_of_warp_data[warp_num+1]-beginning_of_warp_data[warp_num];
+    float *partial_results;//a thread can change a line every iteration, this is max allocation. To allocate less space in private mem put in global a vector of num of row processed by each thread
+    int *partial_results_row;
 
-    float *ppr_shared=shared_mem;
-    float *results_shared=shared_mem+sizeof(float)*blkDim;
+    float *ppr_shared=&ppr[blkx * blkDim];
+    //float *results_shared=shared_mem+sizeof(float)*blkDim;
 
-    //copy pr chunk in shared mem
-    ppr_shared[thx]=ppr[idx];
-    results_shared[thx]=0;
+    //copy fr chunk in shared mem
+    //ppr_shared[thx]=ppr[idx];
+    //results_shared[thx]=0;
 
-    __syncthreads();
+    //dynamic allocation but can be done previously with cudaMalloc size: 2*sizeof(float)*beginning_of_warp_data[last]*WarpSize and addressed with &vector[beginning_of_warp_data[warp_num]]
+    partial_results = (float*)malloc(2*sizeof(float)*iter_this_warp);
+    partial_results_row = (int*)&partial_results[iter_this_warp];
+    
+    //these loops have same lenght for all warp
 
+    //initialize partial_results after __syncthreads because it' longer for warps with more data to process
+    for (int i = 0; i<iter_this_warp;i++){
+        partial_results[i]=0;
+    }
     //compute
-
-    for (int i = start; i < end; i+WARP_SIZE) {
-        results_shared[rows[i]%blkDim] += vals[i] * ppr_shared[cols[i] % blkDim];
+    previous_row = rows[start]+1;
+    for (int i = start; i < end; i+=WARP_SIZE) {
+        result_index += (rows[i]!=previous_row);//avoid if
+        partial_results_row[result_index]=rows[i];
+        partial_results[result_index] += vals[i] * ppr_shared[cols[i] % blkDim];
+        previous_row=rows[i];
+        
     }
 
-    __syncthreads();
+    std::cout<<"\n Partial results of block "<<blkx<<" thread "<<thx<<":\n";
+    for (int i=0;i<=result_index;i++){
+        std::cout<< "(r:"<< partial_results_row[i] <<",v:"<< partial_results[i]<<")   ";
+    }
+    std::cout<<"\n shared mem usage:\n";
+    int j=0;
+    for (int i=0;i< BLOCKNUM;i++){
 
-    float result = results_shared[thx]*alpha + dang_fact + (!(pers_ver-idx))*(1-alpha);
-    //32 atomicadd in 1 shot using coalescing
-    atomicAdd(&results[idx], result);
+        while (j<=result_index && partial_results_row[j] >= i*blkDim && partial_results_row[j] < (i+1)*blkDim ){
+            std::cout<< "(block:"<<i<<",sha_r:"<< partial_results_row[j] % blkDim <<",v:"<< partial_results[j]<<")   ";
+            j++;
+        }
+    }
+    //__syncthreads();
+
+    //write on shared mem block_size values in order and then copy them on global mem
+    /* 
+    int j=0;
+    for (int i=0;i< BLOCKNUM;i++){    
+
+        results_shared[thx]=0;
+        __syncthreads(); 
+
+        while (j<=result_index && partial_results_row[j] > i*blkDim && partial_results_row[j] < (i+1)*blkDim ){
+            j++;
+            results_shared[ partial_results_row[j] % blkDim] = partial_results[j];
+        }
+        __syncthreads();        
+        
+        //32 atomicadd in 1 shot using coalescing
+        //__syncwarp(); //useless I think
+        atomicAdd(&results[i*blkDim+thx], results_shared[thx]);
+    }
+ */
+    free(partial_results);
 
 }
- */
-
+ 
 __global__ void gpu_calculate_ppr_3(
     int *cols_idx,
     int* ptr,
@@ -780,7 +824,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
     //put all FLOAT variables
     while (!converged && i < max_iterations) {
 
-        float dang_fact = 0;
+        double dang_fact = 0;
         for (int j = 0; j < V; j++){
             dang_fact += dangling[j] * pr_f[j];
         }
@@ -789,6 +833,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
 
         //set d_newPr full of 0
         cudaMemset(d_newPr_f, 0.0, V*sizeof(float));
+        cudaDeviceSynchronize();
 
         // Call the GPU computation.
         gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data);
@@ -813,6 +858,13 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         gpu_vector_power_sum<<<BlockNum, block_size>>>(d_pr_f, d_err_sum, d_newPr_f,V, static_cast<float>(alpha), dang_fact, personalization_vertex);//it should copy d_newPr_f in d_diff_f after the computation
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(&pr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+/* 
+        std::cout<<"Dang: "<<dang_fact<<" 1-aplha:"<<1-alpha<<"\n";
+        for (int j=0;j<V;j++){
+            std::cout<<pr_f[j]<<"   ";
+        }
+        std::cout<<"\n";
+ */
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -879,8 +931,8 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            //test_pre_processing();
-            personalized_page_rank_2(iter);
+            test_pre_processing();
+            //personalized_page_rank_2(iter);
             //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
             //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
@@ -999,5 +1051,20 @@ void PersonalizedPageRank::test_pre_processing(){
     std::cout<< "\n\nblock_iterations:";
     for (i=0; i<beginning_of_warp_data.size()&&i<40;i++){
         std::cout<< "  " << beginning_of_warp_data[i];
+    }
+
+    assert(V<20);
+    pr_f[0]=0.15;
+    for (i=1;i<V;i++){
+        pr_f[i]=0.0;
+    }
+
+    for (i=0;i<BlockNum;i++){
+
+        for(int ax=0;ax<block_size;ax++){
+
+            cpu_calculate_ppr_2(&processedY[0],&processedX[0],&processedVal[0], &pr_f[0],&newPr_f[0],&beginning_of_warp_data[0],
+                0.1,1, 0.15,ax,i,block_size);
+        }
     }
 }
