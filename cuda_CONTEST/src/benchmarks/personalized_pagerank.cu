@@ -29,10 +29,14 @@
 
 #include <sstream>
 #include <assert.h>
+#include <thread>
+#include <map>
 #include "personalized_pagerank.cuh"
 
 #define WARP_SIZE 32
+#define SHARED_DIM 49152//48KB
 #define BLOCKNUM 151
+#define UNROLL_PREPROC 20
 
 namespace chrono = std::chrono;
 using clock_type = chrono::high_resolution_clock;
@@ -423,9 +427,140 @@ void PersonalizedPageRank::converter(){
 
 }
 
+void PersonalizedPageRank::pre_process_block(int block_num){
+    if (block_num>=BlockNum)
+        return;
+    
+    int start=beginning_of_blocks[block_num]*WARP_SIZE;
+    int end=beginning_of_blocks[block_num+1]*WARP_SIZE;
+
+    int num_of_warp_data_block=beginning_of_blocks[block_num+1]-beginning_of_blocks[block_num];
+    std::vector<int> data_in_warp_slot(beginning_of_blocks[block_num+1]-beginning_of_blocks[block_num],0);
+    std::vector<int> index_to_replace;
+    //processedX.resize(total_32blocks*WARP_SIZE,0);
+    //processedXShared.resize(total_32blocks*WARP_SIZE,0);
+    //processedY.resize(total_32blocks*WARP_SIZE,0);
+    //processedVal    remaining_places_in_shared_mem
+
+    int last_row=-1,warp_ex,first_free_warp=0;
+
+    if (end-start>WARP_SIZE){
+        warp_ex=1;
+    }else warp_ex=0;
+
+    for (int i=0;i<E;i++){
+        if (y[i]<block_size*block_num||y[i]>=block_size*(block_num+1))
+            continue;
+        if (x[i]==last_row){
+            if (start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]>=end){
+                index_to_replace.push_back(i);
+                continue;
+            }
+            processedX[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=x[i];
+            processedY[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=y[i];
+            processedVal[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=val_f[i];
+
+            data_in_warp_slot[warp_ex]++;
+            if (data_in_warp_slot[warp_ex]==WARP_SIZE)
+                first_free_warp++; 
+            warp_ex++;
+            continue;
+        }
+        last_row=x[i];
+        
+        assert(start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]<end);
+        processedX[start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]]=x[i];
+        processedY[start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]]=y[i];
+        processedVal[start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]]=val_f[i];
+
+        warp_ex=first_free_warp+1;
+
+        data_in_warp_slot[first_free_warp]++;
+        if (data_in_warp_slot[first_free_warp]==WARP_SIZE)
+            first_free_warp++;        
+    }
+
+    //place index with problems: put first index (the one with lower row in the last slot hoping that is not serialized in shared)
+    bool decreasing=true;
+    int new_pos=num_of_warp_data_block-1,future_first_free_warp=first_free_warp;
+    for (int i=0;i<index_to_replace.size();i++){
+        //bounce between first_free_warp<=a<num_of_warp_data_block (incremental free slots or equal)
+        assert(start+new_pos*WARP_SIZE+data_in_warp_slot[new_pos]<end);
+        processedX[start+new_pos*WARP_SIZE+data_in_warp_slot[new_pos]]=x[index_to_replace[i]];
+        processedY[start+new_pos*WARP_SIZE+data_in_warp_slot[new_pos]]=y[index_to_replace[i]];
+        processedVal[start+new_pos*WARP_SIZE+data_in_warp_slot[new_pos]]=val_f[index_to_replace[i]];
+
+        
+        data_in_warp_slot[new_pos]++;
+        if (data_in_warp_slot[new_pos]==WARP_SIZE&&future_first_free_warp<=new_pos){
+            future_first_free_warp=new_pos+1;
+        }
+
+        if (decreasing){
+            if (first_free_warp>new_pos-1){
+                first_free_warp=future_first_free_warp;
+                new_pos=future_first_free_warp;//here +1 could be better but too complicated to track empty slots
+                decreasing=false;
+            }else{
+                new_pos--;
+            }
+        }else{
+            if (num_of_warp_data_block<=new_pos+1){
+                //new_pos--;//here could be better but too complicated to track empty slots
+                decreasing=true;
+            }else{
+                new_pos++;
+            }
+        }   
+
+    }
+
+    //map each row to a shared mem row
+    std::map<int, int> shared_global_row;
+    int index_to_use=0;
+    for (int i=start;i<end;i++){
+        if (index_to_use>=remaining_places_in_shared_mem){
+            //not enough shared mem so come back at warp beginning and restart mapping from 0, before this warp kernel will write on global mem
+            i-=i%WARP_SIZE-1;
+            index_to_use=0;
+            shared_global_row.clear();
+            continue;
+        }
+
+        if (processedVal[i]==0){
+            //this is a place holder to get x32 positions per block, so change row and sharedRow to not collide with same warp
+            //find an intelligent value: not same as others in the same warp, close to them but not more than remaining_places_in_shared_mem
+            //but it can use a shared mem slot, can't find a solution quicly so keep it for now
+            int val=0,j;
+            for (j=i-i%WARP_SIZE;j<i+(WARP_SIZE-i%WARP_SIZE)-1;j++){
+                if (processedX[j+1]-processedX[j]>1&&processedX[j]!=0){
+                    val=processedX[j]+1;
+                    break;
+                }
+            }
+            if (val==0){
+                val=processedX[j]+1;
+            }
+            processedX[i]=val%(block_size*BlockNum);
+            //processedY[i]=processedY[i+1] improve in the future
+            
+        }
+
+        if (shared_global_row.find(processedX[i])==shared_global_row.end()){
+            shared_global_row[processedX[i]]=index_to_use;
+            index_to_use++;
+        }
+
+        processedXShared[i]=shared_global_row[processedX[i]];
+        
+    }
+
+
+}
+
 
 //it returns num of iterations that each block must do
-//it needs convertedX (free here), x, y, val, pr and fill the processedX,processedY, processedVal,processedPr
+//it needs x, y, val_f and fill the processedX,processedY, processedVal,processedPr
 void PersonalizedPageRank::pre_processing_coo_graph(){
     //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
     assert(E>0 && V>=block_size);
@@ -437,159 +572,49 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
         processedPr.push_back(0);
     } */
 
-    long total_no_op=0;
+    long no_op=0;
+    convertedX.clear(); //don't need in this implementation
 
-    num_of_warp_in_block = block_size/WARP_SIZE;
-    beginning_of_warp_data.push_back(0);
-    
-    //
-    for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){  
-        std::vector<int> thread_start;
-        std::vector<int> semiprocessedX;
-        std::vector<int> semiprocessedY;
-        std::vector<float> semiprocessedVal;
-        int dataLen[2][block_size];   
-        
-        for (int count=0;count<convertedX.size()-1;count++){
-            
-            if (thread_start.size()<block_size){
-                bool not_empty_line_section=false;
-                int thread_start_pos=semiprocessedX.size();
-                
-                for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){
-                    if (y[i]<block_size*thread_block_num)
-                        continue;
-                    semiprocessedX.push_back(x[i]);
-                    semiprocessedY.push_back(y[i]);
-                    semiprocessedVal.push_back(val_f[i]);
-                    not_empty_line_section=true;                    
-                }
-                if (not_empty_line_section)
-                    thread_start.push_back(thread_start_pos);
-            }else{
-                //concat new data to the shortest thread execution
-                int insert_position=0,thread_num=0,length_segment_added=0;
+    remaining_places_in_shared_mem=(SHARED_DIM-4*block_size)/(sizeof(float)*2); //save in shared row and result
 
-                for(int i=convertedX[count];i<convertedX[count+1]&&y[i]<block_size*(thread_block_num+1);i++){                    
-                    if (y[i]<block_size*thread_block_num)
-                        continue;
-                    //first time inside for u have to find where to put this segment
-                    if (i==convertedX[count]){                        
-                        //find shortest section
-                        int j,shortest_exe = 2147483647;
-                        for (j=0;j<block_size-1;j++){
-                            if (thread_start[j+1]-thread_start[j]<shortest_exe){                                
-                                insert_position=thread_start[j+1];                                
-                                shortest_exe=thread_start[j+1]-thread_start[j];
-                                thread_num=j;
-                            }
-                        }
-                        //check last thread seq:
-                        if (semiprocessedX.size()-thread_start[j]<shortest_exe){                                
-                            insert_position=semiprocessedX.size();                                
-                            shortest_exe=semiprocessedX.size()-thread_start[j];
-                            thread_num=j;
-                        }
-                        assert(insert_position!=0);
-                    }
+    beginning_of_blocks.resize(BlockNum+1,0);
 
-                    semiprocessedX.insert(semiprocessedX.begin() + insert_position,x[i]);
-                    semiprocessedY.insert(semiprocessedY.begin() + insert_position,y[i]);
-                    semiprocessedVal.insert(semiprocessedVal.begin() + insert_position,val_f[i]);
-
-                    length_segment_added++;
-
-                }
-
-                //change next threads starting
-                for (int j=thread_num+1;j<block_size && length_segment_added!=0;j++){
-                    thread_start[j]=thread_start[j]+length_segment_added;
-                }
-            }
-            
-        }
-        //assert(thread_start.size()%WARP_SIZE==0); //if it's impossible to tune block_size comment this assert but you'll lose performance. (some threads in a warp won't work and add a lot of 0s)
-
-        assert(thread_start.size()!=0);//if this is triggered one entire block is useless. Now try to decrease blocksize but for the future merge this data with the next
-        bool not_good_params=false;
-        while (thread_start.size()!=block_size){
-            thread_start.push_back(semiprocessedX.size());
-            not_good_params = true;
-        }
-
-        if (not_good_params)
-            std::cout << "\nATTENZIONE alcuni warp fanno 0 istruzioni";
-
-        //sort segments to waste less memory with 0s
-        
-        //create dataLen matrix [[threadNumOfBlock][lenOfDataToProcess]]
-        int j;
-        for (j=0;j<block_size-1;j++){
-            dataLen[0][j]=j;
-            dataLen[1][j]=thread_start[j+1]-thread_start[j];
-        }
-        dataLen[0][j]=j;
-        dataLen[1][j]=semiprocessedX.size()-thread_start[j];
-
-        //sort dataLen
-        bool sorted=false;
-        while(!sorted){
-            sorted=true;
-            for (int a=1;a<block_size;a++){
-                int tempL,tempT;
-                if (dataLen[1][a-1]<dataLen[1][a]){
-                    sorted=false;
-                    tempL=dataLen[1][a];
-                    tempT=dataLen[0][a];
-                    dataLen[1][a]=dataLen[1][a-1];
-                    dataLen[0][a]=dataLen[0][a-1];
-                    dataLen[1][a-1]=tempL;
-                    dataLen[0][a-1]=tempT;
-                }
-            }
-        }
-
-        //append to processed variables in better order
-        int no_op_in_this_block=0;
-
-        for (int warp_num_in_block=0;warp_num_in_block < num_of_warp_in_block; warp_num_in_block++){
-
-            
-            beginning_of_warp_data.push_back(beginning_of_warp_data[beginning_of_warp_data.size()-1]+dataLen[1][warp_num_in_block*WARP_SIZE]);
-            
-            
-            for (int iteration=0;iteration<dataLen[1][warp_num_in_block*WARP_SIZE];iteration++){
-                for (int thread_of_block=warp_num_in_block*WARP_SIZE;thread_of_block<(warp_num_in_block+1)*WARP_SIZE;thread_of_block++){
-                    
-                    if (iteration < dataLen[1][thread_of_block]){
-                        processedX.push_back(semiprocessedX[thread_start[dataLen[0][thread_of_block]]+iteration]);
-                        processedY.push_back(semiprocessedY[thread_start[dataLen[0][thread_of_block]]+iteration]);
-                        processedVal.push_back(semiprocessedVal[thread_start[dataLen[0][thread_of_block]]+iteration]);
-                    }else{
-                        //copy last x and y with value=0
-                        processedX.push_back(semiprocessedX[thread_start[dataLen[0][thread_of_block]]+dataLen[1][thread_of_block]-1]);
-                        processedY.push_back(semiprocessedY[thread_start[dataLen[0][thread_of_block]]+dataLen[1][thread_of_block]-1]);
-                        processedVal.push_back(0);
-                        no_op_in_this_block++;
-                    }
-                }
-            }
-        }
-
-        total_no_op+=no_op_in_this_block;
-        
-        std::cout<<"\nno op in block "<<thread_block_num<<": "<<no_op_in_this_block<<" that is avg: "<< no_op_in_this_block/block_size;
-
-        thread_start.clear();
-        semiprocessedX.clear();
-        semiprocessedY.clear();
-        semiprocessedVal.clear();
+    //read entire col and count num of elements in each column section
+    for (int i=0;i<y.size();i++){
+        beginning_of_blocks[static_cast<int>(y[i]/block_size)+1]++;
     }
-    
-    //Print avg no operations in blocks
-    std::cout<< "\n\navg no operations in blocks: " << total_no_op/BlockNum << ". Each thread: " << total_no_op/(block_size * BlockNum)<<"\n\n";
+    //round num of elements in each column section as nx32 and save only n and accumulate
+    int total_32blocks=0;
+    for (int i=1;i<BlockNum+1;i++){
+        if (beginning_of_blocks[i]%WARP_SIZE!=0){
+            no_op+=WARP_SIZE-beginning_of_blocks[i]%WARP_SIZE;
+            total_32blocks+=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+1;
+            beginning_of_blocks[i]=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+1+beginning_of_blocks[i-1];
+            
+        }else{
+            total_32blocks+=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE);
+            beginning_of_blocks[i]=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+beginning_of_blocks[i-1];            
+        }
+    }
+    std::cout<<"\nThere are "<<no_op<<" no operations";
+    processedX.assign(total_32blocks*WARP_SIZE,0);
+    processedXShared.assign(total_32blocks*WARP_SIZE,0);
+    processedY.assign(total_32blocks*WARP_SIZE,0);
+    processedVal.assign(total_32blocks*WARP_SIZE,0);
 
-    convertedX.clear();
+
+    std::vector<std::thread> th;
+    th.reserve(BlockNum+(UNROLL_PREPROC-BlockNum%UNROLL_PREPROC));
+
+    #pragma unroll(UNROLL_PREPROC)
+    for(int thread_block_num=0;thread_block_num<BlockNum;thread_block_num++){
+        //ts.push_back(this);
+        th.emplace_back(&PersonalizedPageRank::pre_process_block, this, thread_block_num);  // [2]
+    }
+
+    for (auto& thread : th) {
+        thread.join();
+    }
 
 }
 
@@ -645,18 +670,20 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
 
     //malloc vectors first to have x32 addresses
     cudaMalloc(&d_x, sizeof(int) * processedX.size());
+    cudaMalloc(&d_x_shared, sizeof(int) * processedXShared.size());
     cudaMalloc(&d_y, sizeof(int) * processedY.size());
     cudaMalloc(&d_val_f, sizeof(float) * processedVal.size());
     cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
     cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
     
-    cudaMalloc(&d_beginning_of_warp_data, sizeof(int) * beginning_of_warp_data.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
+    cudaMalloc(&d_beginning_of_blocks, sizeof(int) * beginning_of_blocks.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
     cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
 
-    cudaMemcpy(d_x, &processedX[0], sizeof(int) * x.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, &processedY[0], sizeof(int) *  y.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  val_f.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_beginning_of_warp_data, &beginning_of_warp_data[0], sizeof(int) *  beginning_of_warp_data.size(), cudaMemcpyHostToDevice);    
+    cudaMemcpy(d_x, &processedX[0], sizeof(int) * processedX.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x_shared, &processedXShared[0], sizeof(int) * processedXShared.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &processedY[0], sizeof(int) *  processedY.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  processedVal.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_beginning_of_blocks, &beginning_of_blocks[0], sizeof(int) *  beginning_of_blocks.size(), cudaMemcpyHostToDevice);    
     cudaMemset(d_pr_f, 0.0, sizeof(float) * block_size*BlockNum);
     cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);
 }
@@ -838,7 +865,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         cudaDeviceSynchronize();
 
         // Call the GPU computation.
-        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_warp_data);
+        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks);
         /* 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -933,8 +960,8 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            //test_pre_processing();
-            personalized_page_rank_2(iter);
+            test_pre_processing();
+            //personalized_page_rank_2(iter);
             //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
             //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
@@ -1036,13 +1063,15 @@ void PersonalizedPageRank::test_pre_processing(){
         std::cout<< "  " << val_f[i];
     }
 
+    int from=0,to=from*WARP_SIZE*2;
     std::cout<< "\n\nprocessed vectors size: "<<processedX.size();
     std::cout<< "\nprocessedX:";
-    for (i=289; i<354&&processedX.size();i++){
+    for (i=from; i<to&&processedX.size();i++){
         std::cout<< "  " << processedX[i];
         if (i%WARP_SIZE==0)
           std::cout<< "x";
     }
+    /*
     std::cout<< "\nordered?:";
     int f=1;
     for (i=0; i<processedX.size()-WARP_SIZE;i++){
@@ -1053,27 +1082,27 @@ void PersonalizedPageRank::test_pre_processing(){
         }
         if (processedX[i]>processedX[i+WARP_SIZE])
             std::cout<< " !"<<i;
-    }
+    }*/
     std::cout<< "\nprocessedY:";
-    for (i=289; i<354&&processedY.size();i++){
+    for (i=from; i<to&&processedY.size();i++){
         std::cout<< "  " << processedY[i];
         if (i%WARP_SIZE==0)
           std::cout<< "x";
     }
     std::cout<< "\nprocessedVal:";
-    for (i=289; i<354&&processedVal.size();i++){
+    for (i=from; i<to&&processedVal.size();i++){
         std::cout<< "  " << processedVal[i];
         if (i%WARP_SIZE==0)
           std::cout<< "x";
     }
 
     std::cout<< "\n\nblock_iterations:";
-    for (i=0; i<beginning_of_warp_data.size()&&i<40;i++){
-        std::cout<< "  " << beginning_of_warp_data[i];
+    for (i=0; i<beginning_of_blocks.size()&&i<40;i++){
+        std::cout<< "  " << beginning_of_blocks[i];
     }
-
+    
     std::cout<< "\npr:"<<pr_f[21];
-
+/*
     for (i=0;i<4;i++){
 
         for(int ax=0;ax<4;ax++){
@@ -1081,5 +1110,5 @@ void PersonalizedPageRank::test_pre_processing(){
             cpu_calculate_ppr_2(&processedY[0],&processedX[0],&processedVal[0], &pr_f[0],&newPr_f[0],&beginning_of_warp_data[0],
                 0.1,1, 0.15,ax,i,block_size);
         }
-    }
+    }*/
 }

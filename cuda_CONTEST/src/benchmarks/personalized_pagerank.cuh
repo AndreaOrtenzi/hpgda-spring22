@@ -154,10 +154,13 @@ class PersonalizedPageRank : public Benchmark {
 
     // Implementation 2
     std::vector<int> processedX;
+    std::vector<int> processedXShared;
     std::vector<int> processedY;
     std::vector<float> processedVal; //change in float
-    std::vector<int> beginning_of_warp_data;
-    int num_of_warp_in_block;
+    //std::vector<int> beginning_of_warp_data;
+    std::vector<int> beginning_of_blocks;
+    int remaining_places_in_shared_mem;
+    //int num_of_warp_in_block;
 
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;
@@ -177,7 +180,7 @@ class PersonalizedPageRank : public Benchmark {
     float err_sum;
 
     // Implementation 2
-    int *d_beginning_of_warp_data;
+    int *d_beginning_of_blocks,*d_x_shared;
 
     // Implementation 3
     int *d_dangling;
@@ -194,6 +197,7 @@ class PersonalizedPageRank : public Benchmark {
     void alloc_to_gpu_3();
 
     float euclidean_distance_float(float *x, float *y, int N);
+    void pre_process_block(int block_num);
     
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
