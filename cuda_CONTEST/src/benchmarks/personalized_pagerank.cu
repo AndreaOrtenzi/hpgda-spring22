@@ -32,7 +32,7 @@
 #include "personalized_pagerank.cuh"
 
 #define WARP_SIZE 32
-#define BLOCKNUM 4
+#define BLOCKNUM 151
 
 namespace chrono = std::chrono;
 using clock_type = chrono::high_resolution_clock;
@@ -183,15 +183,17 @@ __global__ void gpu_calculate_ppr_2(
     //__syncthreads();
 
     //write on shared mem block_size values in order and then copy them on global mem
-    int j=0;
+    
     for (int i=0;i<gridDim.x;i++){    
-
+        int j=0;
         results_shared[threadIdx.x]=0;
         __syncthreads(); 
 
-        while (j<=result_index && partial_results_row[j] >= i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x ){
+        while (j<=result_index){
+          if(partial_results_row[j] >= i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x){
             results_shared[ partial_results_row[j] % blockDim.x] = partial_results[j];
-            j++;
+          }
+          j++;
         }
         __syncthreads();        
         
@@ -219,7 +221,7 @@ void PersonalizedPageRank::cpu_calculate_ppr_2(
     int blkDim)
 {
     int idx = thx + blkx * blkDim;
-    int warp_num =  static_cast<int>(thx * blkx/WARP_SIZE) + static_cast<int>(thx/WARP_SIZE);
+    int warp_num =  static_cast<int>(blkx * blkDim/WARP_SIZE) + static_cast<int>(thx/WARP_SIZE);
     int start = beginning_of_warp_data[warp_num]*WARP_SIZE + thx; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
     int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
     int result_index=-1,previous_row,iter_this_warp=beginning_of_warp_data[warp_num+1]-beginning_of_warp_data[warp_num];
@@ -506,7 +508,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             }
             
         }
-        assert(thread_start.size()%WARP_SIZE==0); //if it's impossible to tune block_size comment this assert but you'll lose performance. (some threads in a warp won't work and add a lot of 0s)
+        //assert(thread_start.size()%WARP_SIZE==0); //if it's impossible to tune block_size comment this assert but you'll lose performance. (some threads in a warp won't work and add a lot of 0s)
 
         assert(thread_start.size()!=0);//if this is triggered one entire block is useless. Now try to decrease blocksize but for the future merge this data with the next
         bool not_good_params=false;
@@ -832,7 +834,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         
 
         //set d_newPr full of 0
-        cudaMemset(d_newPr_f, 0.0, V*sizeof(float));
+        cudaMemset(d_newPr_f, 0.0, block_size*BlockNum*sizeof(float));
         cudaDeviceSynchronize();
 
         // Call the GPU computation.
@@ -931,8 +933,8 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            test_pre_processing();
-            //personalized_page_rank_2(iter);
+            //test_pre_processing();
+            personalized_page_rank_2(iter);
             //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
             //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
@@ -1036,16 +1038,33 @@ void PersonalizedPageRank::test_pre_processing(){
 
     std::cout<< "\n\nprocessed vectors size: "<<processedX.size();
     std::cout<< "\nprocessedX:";
-    for (i=0; i<40&&processedX.size();i++){
+    for (i=289; i<354&&processedX.size();i++){
         std::cout<< "  " << processedX[i];
+        if (i%WARP_SIZE==0)
+          std::cout<< "x";
+    }
+    std::cout<< "\nordered?:";
+    int f=1;
+    for (i=0; i<processedX.size()-WARP_SIZE;i++){
+        if (static_cast<int>(i/32)+1==beginning_of_warp_data[f]){
+            if (i%32==31)
+              f++;
+            continue;
+        }
+        if (processedX[i]>processedX[i+WARP_SIZE])
+            std::cout<< " !"<<i;
     }
     std::cout<< "\nprocessedY:";
-    for (i=0; i<40&&processedY.size();i++){
+    for (i=289; i<354&&processedY.size();i++){
         std::cout<< "  " << processedY[i];
+        if (i%WARP_SIZE==0)
+          std::cout<< "x";
     }
     std::cout<< "\nprocessedVal:";
-    for (i=0; i<40&&processedVal.size();i++){
+    for (i=289; i<354&&processedVal.size();i++){
         std::cout<< "  " << processedVal[i];
+        if (i%WARP_SIZE==0)
+          std::cout<< "x";
     }
 
     std::cout<< "\n\nblock_iterations:";
@@ -1053,15 +1072,11 @@ void PersonalizedPageRank::test_pre_processing(){
         std::cout<< "  " << beginning_of_warp_data[i];
     }
 
-    assert(V<20);
-    pr_f[0]=0.15;
-    for (i=1;i<V;i++){
-        pr_f[i]=0.0;
-    }
+    std::cout<< "\npr:"<<pr_f[21];
 
-    for (i=0;i<BlockNum;i++){
+    for (i=0;i<4;i++){
 
-        for(int ax=0;ax<block_size;ax++){
+        for(int ax=0;ax<4;ax++){
 
             cpu_calculate_ppr_2(&processedY[0],&processedX[0],&processedVal[0], &pr_f[0],&newPr_f[0],&beginning_of_warp_data[0],
                 0.1,1, 0.15,ax,i,block_size);
