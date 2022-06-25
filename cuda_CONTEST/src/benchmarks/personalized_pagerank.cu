@@ -924,7 +924,7 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
     while (!converged && i < max_iterations) {
 
         float dang_fact = 0;
-        gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_pr_f, d_dang_res, V);
+        gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_newPr_f, d_dang_res, V);
         cudaMemcpy(&dang_fact, d_dang_res, sizeof(float), cudaMemcpyDeviceToHost);
         dang_fact *= alpha / V;
 
@@ -934,7 +934,7 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
 
         gpu_vector_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, V);
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+        //
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -944,7 +944,7 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
         i++;
     }
 
-    
+    cudaMemcpy(&pr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
     //copy results on pr
     for (int j=0;j<V;j++){
         pr.push_back(static_cast<double>(pr_f[j]));
