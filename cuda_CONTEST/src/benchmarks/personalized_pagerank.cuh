@@ -161,6 +161,7 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<float> processedVal; //change in float
     //std::vector<int> beginning_of_warp_data;
     std::vector<int> beginning_of_blocks;
+    std::vector<int> last_write_length;
     std::vector<int> writings_of_blocks;
     std::list<int> writings_of_blocks_list;
     int remaining_places_in_shared_mem;
@@ -184,7 +185,7 @@ class PersonalizedPageRank : public Benchmark {
     float err_sum;
 
     // Implementation 2
-    int *d_beginning_of_blocks,*d_x_shared,*d_writings_of_blocks;
+    int *d_beginning_of_blocks,*d_x_shared,*d_writings_of_blocks,*d_last_write_length;
     std::mutex mu;
 
     // Implementation 3
@@ -213,18 +214,5 @@ class PersonalizedPageRank : public Benchmark {
     //testing
     void test_pre_processing();
     
-    void cpu_calculate_ppr_2(
-    int* cols,
-    int* rows,
-    float* vals,
-    float* ppr,
-    float* results,
-    int* beginning_of_warp_data,
-    float dang_fact,
-    int pers_ver,
-    float alpha,
-    int thx,
-    int blkx,
-    int blkDim);
  
 };
