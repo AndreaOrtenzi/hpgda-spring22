@@ -642,6 +642,36 @@ void PersonalizedPageRank::alloc_to_gpu_3() {
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
 
 }
+void PersonalizedPageRank::alloc_to_gpu_4() {
+
+    //malloc vectors first to have x32 addresses
+    cudaMalloc(&d_x, sizeof(int) * processedX.size());
+    cudaMalloc(&d_x_shared, sizeof(int) * processedXShared.size());
+    cudaMalloc(&d_y, sizeof(int) * processedY.size());
+    cudaMalloc(&d_val_f, sizeof(float) * processedVal.size());
+    cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
+    cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
+    
+    cudaMalloc(&d_writings_of_blocks, sizeof(int) * writings_of_blocks.size());
+    cudaMalloc(&d_beginning_of_blocks, sizeof(int) * beginning_of_blocks.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
+    cudaMalloc(&d_last_write_length, sizeof(int) * last_write_length.size());
+    cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
+    cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
+    cudaMalloc(&d_dang_res, sizeof(float) * dangling.size());
+
+    cudaMemcpy(d_x, &processedX[0], sizeof(int) * processedX.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x_shared, &processedXShared[0], sizeof(int) * processedXShared.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &processedY[0], sizeof(int) *  processedY.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  processedVal.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_beginning_of_blocks, &beginning_of_blocks[0], sizeof(int) *  beginning_of_blocks.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_writings_of_blocks, &writings_of_blocks[0], sizeof(int) *  writings_of_blocks.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_last_write_length, &last_write_length[0], sizeof(int) *  last_write_length.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
+    cudaMemset(d_pr_f, 0.0, sizeof(float) * block_size*BlockNum);
+    cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);    
+    
+
+}
 
 // Allocate data on the CPU and GPU;
 void PersonalizedPageRank::alloc() {
@@ -670,6 +700,10 @@ void PersonalizedPageRank::alloc() {
         break;
     case 3:
         alloc_to_gpu_3();
+        break;
+    case 4:
+        pre_processing_coo_graph();
+        alloc_to_gpu_4();
     default:
         break;
     }
@@ -887,6 +921,46 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
     }
 }
 
+void PersonalizedPageRank::personalized_page_rank_4(int iter){
+    bool converged = false;
+    float *d_temp;
+    int i = 0;
+
+    while (!converged && i < max_iterations) {
+        float dang_fact = 0;        
+            
+
+        cudaMemset(d_newPr_f, 0.0, V*sizeof(float));
+        cudaDeviceSynchronize();
+        
+        gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_pr_f, d_dang_res, V);
+
+        // Call the GPU computation.
+        gpu_calculate_ppr_2<<< BlockNum, block_size,SHARED_DIM>>>(d_y, d_x,d_x_shared, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks,d_writings_of_blocks,d_last_write_length);
+
+        cudaDeviceSynchronize();
+        cudaMemcpy(&dang_fact, d_dang_res, sizeof(float), cudaMemcpyDeviceToHost);
+        dang_fact *= alpha / V;
+
+        gpu_vector_power_sum<<<BlockNum, block_size>>>(d_pr_f, d_err_sum, d_newPr_f,V, static_cast<float>(alpha), dang_fact, personalization_vertex);
+        cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
+        
+
+        d_temp=d_pr_f;
+        d_pr_f=d_newPr_f;
+        d_newPr_f=d_temp;
+
+        converged = std::sqrt(err_sum) <= convergence_threshold;
+        i++;
+    }
+
+    cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
+    //copy results on pr
+    for (int j=0;j<V;j++){
+        pr.push_back(static_cast<double>(pr_f[j]));
+    }
+}
+
 // Do the GPU computation here, and also transfer results to the CPU;
 void PersonalizedPageRank::execute(int iter) {
 
@@ -910,6 +984,8 @@ void PersonalizedPageRank::execute(int iter) {
             personalized_page_rank_3(iter);
             break;
         case 4: //euclidean 1 every 2 cycles
+            personalized_page_rank_4(iter);
+            break;
         case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu only those values with their position (40*4Byte)
         //even the casting is done only on these 20 values
         default:
