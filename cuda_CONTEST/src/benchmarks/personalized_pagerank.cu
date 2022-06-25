@@ -30,6 +30,7 @@
 #include <sstream>
 #include <assert.h>
 #include <thread>
+#include <mutex>
 #include <map>
 #include "personalized_pagerank.cuh"
 
@@ -65,7 +66,7 @@ __global__ void gpu_vector_sum(float *x, float *res, int N) {
         atomicAdd(res, sum);                   // The first thread in the warp updates the output;
 }
 
-__global__ void gpu_vector_power_sum(float *pprOld, float *res, float *pprNew,int N,float alpha,double dang_fact, int pers_ver){
+__global__ void gpu_vector_power_sum (float *pprOld, float *res, float *pprNew,int N,float alpha,double dang_fact, int pers_ver){
     double sum = double(0);
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
         pprNew[i] = pprNew[i]*alpha + dang_fact + (!(pers_ver-i))*(1-alpha);
@@ -141,72 +142,62 @@ __global__ void gpu_calculate_ppr_1(
 __global__ void gpu_calculate_ppr_2(
     int* cols,
     int* rows,
+    int* shared_rows,
     float* vals,
     float* ppr,
     float* results,
-    int* beginning_of_warp_data)
+    int* beginning_of_block_data,
+    int* writing_of_blocks)
 {
     const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    const int warp_num =  static_cast<int>(blockIdx.x * blockDim.x/WARP_SIZE) + static_cast<int>(threadIdx.x/WARP_SIZE);
-    const int start = beginning_of_warp_data[warp_num]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
-    const int end = beginning_of_warp_data[warp_num+1]*WARP_SIZE;
-    int result_index=-1,previous_row,iter_this_warp=beginning_of_warp_data[warp_num+1]-beginning_of_warp_data[warp_num];
-    float *partial_results;//a thread can change a line every iteration, this is max allocation. To allocate less space in private mem put in global a vector of num of row processed by each thread
-    int *partial_results_row;
+    
+    const int start = writing_of_blocks[beginning_of_block_data[blockIdx.x]]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    int writing_moment = writing_of_blocks[beginning_of_block_data[blockIdx.x]+1]*WARP_SIZE,writing_index=2;
+    const int end = writing_of_blocks[beginning_of_block_data[blockIdx.x+1]]*WARP_SIZE;
+    
 
     extern __shared__ float shared_mem[];
     float *ppr_shared=shared_mem;// 500*4 = 2 000
     float *results_shared=&shared_mem[blockDim.x];//3 500 000 * 4 = 14 000 000 max 48kb too big
+    const int max_rows_in_shared=(SHARED_DIM-sizeof(float)*blockDim.x)/(sizeof(float)*2);
+    int *results_glob_mem_rows=(int*) &results_shared[max_rows_in_shared];
 
     //copy ppr chunk in shared mem
-    //assert(ppr[idx]!=0);//NON LO PASSA?!?!? forse perchè float approx
     ppr_shared[threadIdx.x]=ppr[idx];
 
-    __syncthreads();
-    
-    //dynamic allocation but can be done previously with cudaMalloc size: 2*sizeof(float)*beginning_of_warp_data[last]*WarpSize and addressed with &vector[beginning_of_warp_data[warp_num]]
-    partial_results = (float*)malloc(2*sizeof(float)*iter_this_warp);
-    partial_results_row = (int*)&partial_results[iter_this_warp];
-    
-    //these loops have same lenght for all warp
-
-    //initialize partial_results after __syncthreads because it' longer for warps with more data to process
-    for (int i = 0; i<iter_this_warp;i++){
-        partial_results[i]=0;
+    for(int j=0+threadIdx.x;j<max_rows_in_shared;j+=blockDim.x){
+        results_shared[j]=0;
+        results_glob_mem_rows[j]=j;
     }
+
+    __syncthreads();    
+
     //compute
-    previous_row = rows[start]+1;
-    for (int i = start; i < end; i+=WARP_SIZE) {
-        result_index += (rows[i]!=previous_row);//avoid if
-        partial_results_row[result_index]=rows[i];
-        partial_results[result_index] += vals[i] * ppr_shared[cols[i] % blockDim.x];
-        previous_row=rows[i];
-        
-    }
-
-    //__syncthreads();
-
-    //write on shared mem block_size values in order and then copy them on global mem
-    
-    for (int i=0;i<gridDim.x;i++){    
-        int j=0;
-        results_shared[threadIdx.x]=0;
-        __syncthreads(); 
-
-        while (j<=result_index){
-          if(partial_results_row[j] >= i*blockDim.x && partial_results_row[j] < (i+1)*blockDim.x){
-            results_shared[ partial_results_row[j] % blockDim.x] = partial_results[j];
-          }
-          j++;
+    //previous_row = rows[start]+1;
+    for (int i = start; i < end; i+=blockDim.x) {
+        if (i>=writing_moment){
+            __syncthreads();
+            writing_moment=writing_of_blocks[beginning_of_block_data[blockIdx.x]+writing_index]*WARP_SIZE;
+            writing_index++;
+            //shared mem full, copy on global mem and clear it
+            for(int j=0+threadIdx.x;j<max_rows_in_shared;j+=blockDim.x){
+                atomicAdd(&results[results_glob_mem_rows[j]], results_shared[j]);
+                results_shared[j]=0;
+                results_glob_mem_rows[j]=j;
+            }            
+            
+            __syncthreads();//wait for it to be empty before continuing
         }
-        __syncthreads();        
-        
-        //32 atomicadd in 1 shot using coalescing
-        //__syncwarp(); //useless I think
-        atomicAdd(&results[i*blockDim.x+threadIdx.x], results_shared[threadIdx.x]);
+
+        atomicAdd(&results_shared[shared_rows[i]], vals[i] * ppr_shared[cols[i] % blockDim.x]);        
     }
 
-    free(partial_results);
+    //write for the last time
+     __syncthreads();
+    
+    for(int j=0+threadIdx.x;j<max_rows_in_shared;j+=blockDim.x){
+        atomicAdd(&results[results_glob_mem_rows[j]], results_shared[j]);
+    }
     
 }
 
@@ -524,6 +515,10 @@ void PersonalizedPageRank::pre_process_block(int block_num){
             i-=i%WARP_SIZE-1;
             index_to_use=0;
             shared_global_row.clear();
+            //add to vector index for writes
+            std::lock_guard<std::mutex> lock{mu};
+            writings_of_blocks_list.push_back((i+1)/WARP_SIZE);
+            std::lock_guard<std::mutex> unlock{mu};
             continue;
         }
 
@@ -565,6 +560,8 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
     assert(E>0 && V>=block_size);
     assert(block_size%WARP_SIZE==0);
+    assert(sizeof(int)==sizeof(float));
+    assert(UNROLL_PREPROC<=BlockNum);
     
     /* processedPr.assign(pr.begin(), pr.end());
     //because p is splitted in block_size segments but no one will access these values
@@ -573,9 +570,10 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     } */
 
     long no_op=0;
+
     convertedX.clear(); //don't need in this implementation
 
-    remaining_places_in_shared_mem=(SHARED_DIM-4*block_size)/(sizeof(float)*2); //save in shared row and result
+    remaining_places_in_shared_mem=(SHARED_DIM-sizeof(float)*block_size)/(sizeof(float)*2); //save in shared row and result
 
     beginning_of_blocks.resize(BlockNum+1,0);
 
@@ -583,6 +581,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     for (int i=0;i<y.size();i++){
         beginning_of_blocks[static_cast<int>(y[i]/block_size)+1]++;
     }
+
     //round num of elements in each column section as nx32 and save only n and accumulate
     int total_32blocks=0;
     for (int i=1;i<BlockNum+1;i++){
@@ -601,6 +600,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     processedXShared.assign(total_32blocks*WARP_SIZE,0);
     processedY.assign(total_32blocks*WARP_SIZE,0);
     processedVal.assign(total_32blocks*WARP_SIZE,0);
+    writings_of_blocks.push_back(0);
 
 
     std::vector<std::thread> th;
@@ -614,6 +614,22 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
     for (auto& thread : th) {
         thread.join();
+    }
+
+    //sort writings because with threads they are random O(NlogN)
+    writings_of_blocks_list.sort();
+
+    writings_of_blocks.assign(writings_of_blocks_list.begin(),writings_of_blocks_list.end());
+    writings_of_blocks_list.clear();
+    
+
+    //change beginning_of_blocks to not be redundant so it contains the index of the first and the last value in writings_of_blocks
+    int beginning_of_blocks_index=0;
+    for (int i=0;i<writings_of_blocks.size();i++){
+        if(beginning_of_blocks[beginning_of_blocks_index]==writings_of_blocks[i]){
+            beginning_of_blocks[beginning_of_blocks_index]=i;
+            beginning_of_blocks_index++;
+        }
     }
 
 }
@@ -676,6 +692,7 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
     cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
     
+    cudaMalloc(&d_writings_of_blocks, sizeof(int) * writings_of_blocks.size());
     cudaMalloc(&d_beginning_of_blocks, sizeof(int) * beginning_of_blocks.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
     cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
 
@@ -683,7 +700,8 @@ void PersonalizedPageRank::alloc_to_gpu_2() {
     cudaMemcpy(d_x_shared, &processedXShared[0], sizeof(int) * processedXShared.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_y, &processedY[0], sizeof(int) *  processedY.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  processedVal.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_beginning_of_blocks, &beginning_of_blocks[0], sizeof(int) *  beginning_of_blocks.size(), cudaMemcpyHostToDevice);    
+    cudaMemcpy(d_beginning_of_blocks, &beginning_of_blocks[0], sizeof(int) *  beginning_of_blocks.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_writings_of_blocks, &writings_of_blocks[0], sizeof(int) *  writings_of_blocks.size(), cudaMemcpyHostToDevice);
     cudaMemset(d_pr_f, 0.0, sizeof(float) * block_size*BlockNum);
     cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);
 }
@@ -869,7 +887,7 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
         cudaDeviceSynchronize();
 
         // Call the GPU computation.
-        gpu_calculate_ppr_2<<< BlockNum, block_size,2*sizeof(float)*block_size>>>(d_y, d_x, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks);
+        gpu_calculate_ppr_2<<< BlockNum, block_size,SHARED_DIM>>>(d_y, d_x,d_x_shared, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks,d_writings_of_blocks);
         /* 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -934,7 +952,7 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
 
         gpu_vector_sum<<<BlockNum, block_size>>>(d_diff_f, d_err_sum, V);
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
-        //
+        
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;

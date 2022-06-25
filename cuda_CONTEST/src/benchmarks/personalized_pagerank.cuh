@@ -29,6 +29,8 @@
 
 #pragma once
 #include <set>
+#include <list>
+#include <mutex>
 #include <iterator>
 #include "../benchmark.cuh"
 
@@ -159,6 +161,8 @@ class PersonalizedPageRank : public Benchmark {
     std::vector<float> processedVal; //change in float
     //std::vector<int> beginning_of_warp_data;
     std::vector<int> beginning_of_blocks;
+    std::vector<int> writings_of_blocks;
+    std::list<int> writings_of_blocks_list;
     int remaining_places_in_shared_mem;
     //int num_of_warp_in_block;
 
@@ -180,11 +184,12 @@ class PersonalizedPageRank : public Benchmark {
     float err_sum;
 
     // Implementation 2
-    int *d_beginning_of_blocks,*d_x_shared;
+    int *d_beginning_of_blocks,*d_x_shared,*d_writings_of_blocks;
+    std::mutex mu;
 
     // Implementation 3
     int *d_dangling;
-    float *d_dang_res;
+    float* d_dang_res;
     
 
     void initialize_graph();
