@@ -203,7 +203,6 @@ class PersonalizedPageRank : public Benchmark {
     void alloc_to_gpu_3();
 
     float euclidean_distance_float(float *x, float *y, int N);
-    void pre_process_block(int block_num);
     
     // Implementations of the algorithm;
     void personalized_page_rank_0(int iter);
