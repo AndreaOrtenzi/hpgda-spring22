@@ -150,7 +150,7 @@ __global__ void gpu_calculate_ppr_2(
     int* writing_of_blocks)
 {
     const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    
+
     const int start = writing_of_blocks[beginning_of_block_data[blockIdx.x]]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
     int writing_moment = writing_of_blocks[beginning_of_block_data[blockIdx.x]+1]*WARP_SIZE,writing_index=2;
     const int end = writing_of_blocks[beginning_of_block_data[blockIdx.x+1]]*WARP_SIZE;
@@ -188,7 +188,7 @@ __global__ void gpu_calculate_ppr_2(
             
             __syncthreads();//wait for it to be empty before continuing
         }
-
+        results_glob_mem_rows[shared_rows[i]]=rows[i];
         atomicAdd(&results_shared[shared_rows[i]], vals[i] * ppr_shared[cols[i] % blockDim.x]);        
     }
 
@@ -433,23 +433,34 @@ void PersonalizedPageRank::pre_process_block(int block_num){
     //processedY.resize(total_32blocks*WARP_SIZE,0);
     //processedVal    remaining_places_in_shared_mem
 
-    int last_row=-1,warp_ex,first_free_warp=0;
+    int last_row=-1,warp_ex,first_free_warp=0,row=0;
 
     if (end-start>WARP_SIZE){
         warp_ex=1;
     }else warp_ex=0;
-
+    //std::cout<<"\nBlock "<<block_num<<" processing from: "<<start<<" to: "<<end;
+    
     for (int i=0;i<E;i++){
         if (y[i]<block_size*block_num||y[i]>=block_size*(block_num+1))
             continue;
+        /*if(){
+            i=convertedX[row+1]-1;
+            row+=convertedX[row]==i-1;
+            continue;
+        } */           
         if (x[i]==last_row){
-            if (start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]>=end){
+            if (start+warp_ex*WARP_SIZE>=end){
                 index_to_replace.push_back(i);
+                //std::cout<<"\nAdded in index with problem: "<<i;
                 continue;
             }
+            assert(start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]<end);
+            //std::cout<<"\nAdded in next warp because same row ("<<last_row<<") col: "<<y[i]<<" val_f: "<<val_f[i]<<" position: "<<start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex];
+            //std::lock_guard<std::mutex> lock{mu};
             processedX[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=x[i];
             processedY[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=y[i];
             processedVal[start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex]]=val_f[i];
+            //std::lock_guard<std::mutex> unlock{mu};
 
             data_in_warp_slot[warp_ex]++;
             if (data_in_warp_slot[warp_ex]==WARP_SIZE)
@@ -457,8 +468,9 @@ void PersonalizedPageRank::pre_process_block(int block_num){
             warp_ex++;
             continue;
         }
+        row++;
         last_row=x[i];
-        
+        //std::cout<<"\nAdded in firstFreeWarp ("<<first_free_warp<<") row: "<<x[i]<<" col: "<<y[i]<<" val_f: "<<val_f[i]<<" position: "<<start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp];
         assert(start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]<end);
         processedX[start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]]=x[i];
         processedY[start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp]]=y[i];
@@ -516,9 +528,9 @@ void PersonalizedPageRank::pre_process_block(int block_num){
             index_to_use=0;
             shared_global_row.clear();
             //add to vector index for writes
-            std::lock_guard<std::mutex> lock{mu};
+            mu.lock();
             writings_of_blocks_list.push_back((i+1)/WARP_SIZE);
-            std::lock_guard<std::mutex> unlock{mu};
+            mu.unlock();
             continue;
         }
 
@@ -571,8 +583,6 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
     long no_op=0;
 
-    convertedX.clear(); //don't need in this implementation
-
     remaining_places_in_shared_mem=(SHARED_DIM-sizeof(float)*block_size)/(sizeof(float)*2); //save in shared row and result
 
     beginning_of_blocks.resize(BlockNum+1,0);
@@ -594,14 +604,15 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             total_32blocks+=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE);
             beginning_of_blocks[i]=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+beginning_of_blocks[i-1];            
         }
-    }
+    }   
     std::cout<<"\nThere are "<<no_op<<" no operations";
+  
     processedX.assign(total_32blocks*WARP_SIZE,0);
     processedXShared.assign(total_32blocks*WARP_SIZE,0);
     processedY.assign(total_32blocks*WARP_SIZE,0);
     processedVal.assign(total_32blocks*WARP_SIZE,0);
-    writings_of_blocks.push_back(0);
-
+    //writings_of_blocks_list.push_back(0);
+    writings_of_blocks_list.assign(beginning_of_blocks.begin(),beginning_of_blocks.end());
 
     std::vector<std::thread> th;
     th.reserve(BlockNum+(UNROLL_PREPROC-BlockNum%UNROLL_PREPROC));
@@ -615,6 +626,7 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
     for (auto& thread : th) {
         thread.join();
     }
+    convertedX.clear(); //don't need in this implementation
 
     //sort writings because with threads they are random O(NlogN)
     writings_of_blocks_list.sort();
@@ -982,8 +994,8 @@ void PersonalizedPageRank::execute(int iter) {
             break;
         case 2:
             //use shared mem but it needs coo
-            test_pre_processing();
-            //personalized_page_rank_2(iter);
+            //test_pre_processing();
+            personalized_page_rank_2(iter);
             //improve memory-coalescing changing order of processedX,Y,Val and writing results on shared mem (no atomic add) and after block sync on global (only 1 atomic add for each warp using full bandwidth of global mem)
             //adding at the end of a block data (if len(data)%32!=32) 32-len(data)%32 empty slots or find a way to begin blocks data in x32 addresses
             break;
@@ -1085,11 +1097,17 @@ void PersonalizedPageRank::test_pre_processing(){
         std::cout<< "  " << val_f[i];
     }
 
-    int from=0,to=from*WARP_SIZE*2;
+    int from=0,to=from+WARP_SIZE*2;
     std::cout<< "\n\nprocessed vectors size: "<<processedX.size();
     std::cout<< "\nprocessedX:";
     for (i=from; i<to&&processedX.size();i++){
         std::cout<< "  " << processedX[i];
+        if (i%WARP_SIZE==0)
+          std::cout<< "x";
+    }
+    std::cout<< "\nshared X:";
+    for (i=from; i<to&&processedXShared.size();i++){
+        std::cout<< "  " << processedXShared[i];
         if (i%WARP_SIZE==0)
           std::cout<< "x";
     }
@@ -1121,6 +1139,10 @@ void PersonalizedPageRank::test_pre_processing(){
     std::cout<< "\n\nblock_iterations:";
     for (i=0; i<beginning_of_blocks.size()&&i<40;i++){
         std::cout<< "  " << beginning_of_blocks[i];
+    }
+    std::cout<< "\n\nwritings:";
+    for (i=0; i<writings_of_blocks.size()&&i<40;i++){
+        std::cout<< "  " << writings_of_blocks[i];
     }
     
     std::cout<< "\npr:"<<pr_f[21];
