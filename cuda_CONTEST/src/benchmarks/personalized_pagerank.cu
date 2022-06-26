@@ -83,7 +83,7 @@ __global__ void gpu_vector_prod(int *x, float *y, float *res, int N) {
     }
     sum = warp_reduce(sum);
     if ((threadIdx.x & (WARP_SIZE - 1)) == 0)
-        atomicAdd(res, sum);  
+        atomicAdd(res, sum);
 }
 
 __global__ void gpu_calculate_ppr_0(
@@ -655,9 +655,9 @@ void PersonalizedPageRank::alloc_to_gpu_4() {
     cudaMalloc(&d_writings_of_blocks, sizeof(int) * writings_of_blocks.size());
     cudaMalloc(&d_beginning_of_blocks, sizeof(int) * beginning_of_blocks.size()); //end_of_warp_data.size() is not a x32 so leave as last vector
     cudaMalloc(&d_last_write_length, sizeof(int) * last_write_length.size());
-    cudaMalloc(&d_err_sum, sizeof(float) * BlockNum);
     cudaMalloc(&d_dangling, sizeof(int) * dangling.size());
-    cudaMalloc(&d_dang_res, sizeof(float) * dangling.size());
+    cudaMalloc(&d_err_sum, sizeof(float));
+    cudaMalloc(&d_dang_res, sizeof(float));
 
     cudaMemcpy(d_x, &processedX[0], sizeof(int) * processedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_x_shared, &processedXShared[0], sizeof(int) * processedXShared.size(), cudaMemcpyHostToDevice);
@@ -836,38 +836,17 @@ void PersonalizedPageRank::personalized_page_rank_2(int iter){
 
         //set d_newPr full of 0
         cudaMemset(d_newPr_f, 0.0, block_size*BlockNum*sizeof(float));
+        cudaMemset(d_err_sum, 0.0, sizeof(float));
         cudaDeviceSynchronize();
 
         // Call the GPU computation.
         gpu_calculate_ppr_2<<< BlockNum, block_size,SHARED_DIM>>>(d_y, d_x,d_x_shared, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks,d_writings_of_blocks,d_last_write_length);
-        /* 
-        d_temp=d_pr_f;
-        d_pr_f=d_newPr_f;
-        d_newPr_f=d_temp;
-
-        cudaMemcpy(&pr_f[0],d_pr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-        cudaMemcpy(&newPr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-
-        //ensure entire pr is calculated
-        cudaDeviceSynchronize();
-
-        float err = euclidean_distance_float(&newPr_f[0], &pr_f[0], V);
-        converged = err <= convergence_threshold;
-        i++;
-         */
-  
+          
         cudaDeviceSynchronize();
 
         gpu_vector_power_sum<<<BlockNum, block_size>>>(d_pr_f, d_err_sum, d_newPr_f,V, static_cast<float>(alpha), dang_fact, personalization_vertex);//it should copy d_newPr_f in d_diff_f after the computation
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(&pr_f[0],d_newPr_f, sizeof(float) * V, cudaMemcpyDeviceToHost);
-/* 
-        std::cout<<"Dang: "<<dang_fact<<" 1-aplha:"<<1-alpha<<"\n";
-        for (int j=0;j<V;j++){
-            std::cout<<pr_f[j]<<"   ";
-        }
-        std::cout<<"\n";
- */
 
         d_temp=d_pr_f;
         d_pr_f=d_newPr_f;
@@ -923,14 +902,14 @@ void PersonalizedPageRank::personalized_page_rank_3(int iter){
 
 void PersonalizedPageRank::personalized_page_rank_4(int iter){
     bool converged = false;
-    float *d_temp;
+    float *d_temp, dang_fact = 0;
     int i = 0;
 
     while (!converged && i < max_iterations) {
-        float dang_fact = 0;        
-            
 
         cudaMemset(d_newPr_f, 0.0, V*sizeof(float));
+        cudaMemset(d_err_sum, 0.0, sizeof(float));
+        cudaMemset(d_dang_res, 0.0, sizeof(float));
         cudaDeviceSynchronize();
         
         gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_pr_f, d_dang_res, V);
@@ -940,7 +919,7 @@ void PersonalizedPageRank::personalized_page_rank_4(int iter){
 
         cudaDeviceSynchronize();
         cudaMemcpy(&dang_fact, d_dang_res, sizeof(float), cudaMemcpyDeviceToHost);
-        dang_fact *= alpha / V;
+        dang_fact *= alpha / V;//put this in gpu vector power_sum so don't need to memcpy, is faster?
 
         gpu_vector_power_sum<<<BlockNum, block_size>>>(d_pr_f, d_err_sum, d_newPr_f,V, static_cast<float>(alpha), dang_fact, personalization_vertex);
         cudaMemcpy(&err_sum, d_err_sum, sizeof(float), cudaMemcpyDeviceToHost);
