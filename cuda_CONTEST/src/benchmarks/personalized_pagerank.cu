@@ -989,7 +989,90 @@ std::string PersonalizedPageRank::print_result(bool short_form) {
     }
 }
 
+void PersonalizedPageRank::clean_0() {
+    free(&x[0]);
+    free(&y[0]);  
+    free(&val[0]);  
+    free(&dangling[0]);
+    free(&pr[0]);
+    free(&pr_golden[0]);
+
+    cudaFree(d_x);
+    cudaFree(d_y);
+    cudaFree(d_val);
+    cudaFree(d_pr);
+    cudaFree(d_newPr);
+}
+
+void PersonalizedPageRank::clean_1() {
+    free(&x[0]);
+    free(&y[0]);  
+    free(&val[0]);  
+    free(&dangling[0]);
+    free(&pr[0]);
+    free(&pr_golden[0]);
+
+    cudaFree(d_val_f);
+    cudaFree(d_pr_f);
+    cudaFree(d_newPr_f);
+    cudaFree(d_diff_f);
+    cudaFree(d_err_sum);
+    cudaFree(d_x);
+    cudaFree(d_y);
+    cudaFree(d_val);
+    cudaFree(d_pr);
+    cudaFree(d_newPr);
+}
+
+void PersonalizedPageRank::clean_2() {
+    free(&x[0]);
+    free(&y[0]);  
+    free(&val[0]);  
+    free(&dangling[0]);
+    free(&pr[0]);
+    free(&pr_golden[0]);
+
+    cudaFree(d_beginning_of_blocks);
+    cudaFree(d_x_shared);
+    cudaFree(d_writings_of_blocks);
+    cudaFree(d_last_write_length);
+    cudaFree(d_val_f);
+    cudaFree(d_pr_f);
+    cudaFree(d_newPr_f);
+    cudaFree(d_diff_f);
+    cudaFree(d_err_sum);
+    cudaFree(d_x);
+    cudaFree(d_y);
+    cudaFree(d_val);
+    cudaFree(d_pr);
+    cudaFree(d_newPr);
+}
+
+void PersonalizedPageRank::clean_3() {
+    
+}
+
+void PersonalizedPageRank::clean_4() {}
+
 void PersonalizedPageRank::clean() {
     // Delete any GPU data or additional CPU data;
-
+    switch (implementation) {
+        case 0:
+            clean_0();
+            break;
+        case 1:
+            clean_1();
+            break;
+        case 2:
+            clean_2();
+            break;
+        case 3:
+            clean_3();
+            break;
+        case 4: 
+            clean_4();
+            break;
+        default:
+            break;
+    }
 }

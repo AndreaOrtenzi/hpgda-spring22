@@ -186,7 +186,6 @@ class PersonalizedPageRank : public Benchmark {
 
     // Implementation 2
     int *d_beginning_of_blocks,*d_x_shared,*d_writings_of_blocks,*d_last_write_length;
-    std::mutex mu;
 
     // Implementation 3
     int *d_dangling;
@@ -211,9 +210,11 @@ class PersonalizedPageRank : public Benchmark {
     void personalized_page_rank_2(int iter);
     void personalized_page_rank_3(int iter);
     void personalized_page_rank_4(int iter);
-    
-    //testing
-    void test_pre_processing();
-    
+
+    void clean_0();
+    void clean_1();
+    void clean_2();
+    void clean_3();
+    void clean_4();
  
 };
