@@ -227,6 +227,70 @@ __global__ void gpu_calculate_ppr_3(
     diff[idx] = (result[idx] - p[idx]) * (result[idx] - p[idx]);
 }
 
+__global__ void gpu_calculate_ppr_4(
+    int* cols,
+    int* cols_map,
+    int* rows,
+    int* shared_rows,
+    float* vals,
+    float* ppr,
+    float* results,
+    int* beginning_of_block_data,
+    int* writing_of_blocks,
+    int* last_write_lenght)
+{
+    const int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    const int start = writing_of_blocks[beginning_of_block_data[blockIdx.x]]*WARP_SIZE + threadIdx.x; //*WARP_SIZE because I can overlow int, if it happen we'll change easily here in long
+    int writing_moment = writing_of_blocks[beginning_of_block_data[blockIdx.x]+1]*WARP_SIZE,writing_index=2;
+    const int end = writing_of_blocks[beginning_of_block_data[blockIdx.x+1]]*WARP_SIZE;
+    
+
+    extern __shared__ float shared_mem[];
+    float *ppr_shared=shared_mem;// 500*4 = 2 000
+    float *results_shared=&shared_mem[blockDim.x];//3 500 000 * 4 = 14 000 000 max 48kb too big
+    const int max_rows_in_shared=(SHARED_DIM-sizeof(float)*blockDim.x)/(sizeof(float)*2);
+    int *results_glob_mem_rows=(int*) &results_shared[max_rows_in_shared];
+
+    //copy ppr chunk in shared mem
+    ppr_shared[threadIdx.x]=ppr[cols_map[idx]];
+
+    for(int j=0+threadIdx.x;j<max_rows_in_shared;j+=blockDim.x){
+        results_shared[j]=0;
+        results_glob_mem_rows[j]=j;
+    }
+
+    __syncthreads();    
+
+    //compute
+    //previous_row = rows[start]+1;
+    for (int i = start; i < end; i+=blockDim.x) {
+        if (i>=writing_moment){
+            __syncthreads();
+            writing_moment=writing_of_blocks[beginning_of_block_data[blockIdx.x]+writing_index]*WARP_SIZE;
+            writing_index++;
+            //shared mem full, copy on global mem and clear it
+            for(int j=0+threadIdx.x;j<max_rows_in_shared;j+=blockDim.x){
+                atomicAdd(&results[results_glob_mem_rows[j]], results_shared[j]);
+                results_shared[j]=0;
+                results_glob_mem_rows[j]=j;
+            }            
+            
+            __syncthreads();//wait for it to be empty before continuing
+        }
+        results_glob_mem_rows[shared_rows[i]]=rows[i];
+        atomicAdd(&results_shared[shared_rows[i]], vals[i] * ppr_shared[cols[i]]);        
+    }
+
+    //write for the last time
+     __syncthreads();
+    
+    for(int j=0+threadIdx.x;j<last_write_lenght[blockIdx.x];j+=blockDim.x){
+        atomicAdd(&results[results_glob_mem_rows[j]], results_shared[j]);
+    }
+    
+}
+
 //////////////////////////////
 //////////////////////////////
 
@@ -487,12 +551,12 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
 
         //map each row to a shared mem row
         std::map<int, int> shared_global_row;
-        int index_to_use=0;
+        int index_to_use_row=0;
         for (int i=beginning_of_blocks[block_number]*WARP_SIZE;i<beginning_of_blocks[block_number+1]*WARP_SIZE;i++){
-            if (index_to_use>=remaining_places_in_shared_mem){
+            if (index_to_use_row>=remaining_places_in_shared_mem){
                 //not enough shared mem so come back at warp beginning and restart mapping from 0, before this warp kernel will write on global mem
                 i-=i%WARP_SIZE-1;
-                index_to_use=0;
+                index_to_use_row=0;
                 shared_global_row.clear();
                 //add to vector index for writes
                 
@@ -520,16 +584,255 @@ void PersonalizedPageRank::pre_processing_coo_graph(){
             }
 
             if (shared_global_row.find(processedX[i])==shared_global_row.end()){
-                shared_global_row[processedX[i]]=index_to_use;
-                index_to_use++;
+                shared_global_row[processedX[i]]=index_to_use_row;
+                index_to_use_row++;
             }
 
             processedXShared[i]=shared_global_row[processedX[i]];
             
         }
 
-        last_write_length[block_number]=index_to_use;
+        last_write_length[block_number]=index_to_use_row;
     }
+
+    //sort writings because with threads they are random O(NlogN)
+    writings_of_blocks_list.sort();//should be already ordered
+
+    writings_of_blocks.assign(writings_of_blocks_list.begin(),writings_of_blocks_list.end());
+    writings_of_blocks_list.clear();
+    
+
+    //change beginning_of_blocks to not be redundant so it contains the index of the first and the last value in writings_of_blocks
+    int beginning_of_blocks_index=0;
+    for (int i=0;i<writings_of_blocks.size();i++){
+        if(beginning_of_blocks[beginning_of_blocks_index]==writings_of_blocks[i]){
+            beginning_of_blocks[beginning_of_blocks_index]=i;
+            beginning_of_blocks_index++;
+        }
+    }
+
+}
+
+void PersonalizedPageRank::pre_processing_implementation_4(){
+    //blocksize<=notEmptyLines blocksize=n*32 SUM_blockNum(blocksize*numIter[i])=len processedVal,processedX,Y blockNum=V/blockSize
+    assert(E>0 && V>=block_size);
+    assert(block_size%WARP_SIZE==0);
+    assert(sizeof(int)==sizeof(float));
+    assert(UNROLL_PREPROC<=BlockNum);
+    
+    /* processedPr.assign(pr.begin(), pr.end());
+    //because p is splitted in block_size segments but no one will access these values
+    for (int i=0;i<V%block_size;i++) {
+        processedPr.push_back(0);
+    } */
+    convertedX.clear(); //don't need in this implementation
+    long no_op=0;
+
+    remaining_places_in_shared_mem=(SHARED_DIM-sizeof(float)*block_size)/(sizeof(float)*2); //save in shared row and result
+
+    beginning_of_blocks.resize(BlockNum+1,0);
+
+    //Change the fixed size of group of column in a more efficient way to load on shared only necessary pr (still block_size values)
+    std::map<int,int> col_blocks_map;
+    int last_block=0,dang_found=0;
+    std::cout<<"\n i: ";
+    for (int i=0;i<V;i++){
+        dang_found+=dangling[i];
+        last_block+= i>=((last_block+1)*block_size + dang_found);
+        //std::cout<<last_block;
+        /*if (last_block==26&&dangling[i]!=1){
+            std::cout<<i<<"\n";
+        }*/
+        col_blocks_map[i]=last_block;
+    }
+    std::cout<<"\n Previous blockNum was: "<<BlockNum<<" After removing all dangling column It's "<<last_block+1;
+    BlockNum=last_block+1;
+    
+    //read entire col and count num of elements in each column section    
+    for (int i=0;i<y.size();i++){
+        assert(col_blocks_map.find(y[i])!=col_blocks_map.end());
+        beginning_of_blocks[col_blocks_map[y[i]]+1]++;
+    }
+
+    std::vector<int> last_row(BlockNum,-1);
+    std::vector<int> first_free_warp(BlockNum,0);
+    std::vector<std::vector<int>> data_in_warp_slot(BlockNum);
+    std::list<int> index_to_replace[BlockNum];
+    
+    
+    int warp_ex[BlockNum];
+    //round num of elements in each column section as nx32 and save only n and accumulate and use this for to initialize variables
+    int total_32blocks=0;
+    for (int i=1;i<(BlockNum+1);i++){
+        if ((beginning_of_blocks[i]%WARP_SIZE)!=0){
+            no_op+=WARP_SIZE-beginning_of_blocks[i]%WARP_SIZE;
+            total_32blocks+=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+1;
+            beginning_of_blocks[i]=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+1+beginning_of_blocks[i-1];
+            
+        }else{
+            total_32blocks+=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE);
+            beginning_of_blocks[i]=static_cast<int>(beginning_of_blocks[i]/WARP_SIZE)+beginning_of_blocks[i-1];            
+        }
+        
+        index_to_replace[i-1]= std::list<int>();
+        warp_ex[i-1]=(beginning_of_blocks[i]-beginning_of_blocks[i-1])>1;
+        
+        std::vector<int> temp(beginning_of_blocks[i]-beginning_of_blocks[i-1],0);
+        data_in_warp_slot[i-1].assign(temp.begin(),temp.end()); 
+        temp.clear();
+    }
+    std::cout<<"\nThere are "<<no_op<<" no operations";
+    
+    processedX.assign(total_32blocks*WARP_SIZE,0);
+    processedXShared.assign(total_32blocks*WARP_SIZE,0);
+    processedYShared.assign(total_32blocks*WARP_SIZE,0);
+    processedY.assign(total_32blocks*WARP_SIZE,0);
+    processedYMap.assign(BlockNum*block_size,0);
+    processedVal.assign(total_32blocks*WARP_SIZE,0);
+    last_write_length.resize(BlockNum,0);
+    writings_of_blocks_list.assign(beginning_of_blocks.begin(),beginning_of_blocks.end());
+    
+    std::vector<int> rows_in_problems(BlockNum,0),elem_same_raw_in_problems(BlockNum,0);
+
+    for (int i=0;i<E;i++){
+        
+        int block_number=col_blocks_map[y[i]];
+        
+        
+        if (x[i]==last_row[block_number]){
+            if ((beginning_of_blocks[block_number]*WARP_SIZE + warp_ex[block_number]*WARP_SIZE)>=(beginning_of_blocks[block_number+1]*WARP_SIZE)){
+                
+                if(index_to_replace[block_number].empty() || x[i] != x[*index_to_replace[block_number].begin()]){
+                    index_to_replace[block_number].push_front(i);
+                    rows_in_problems[block_number]++;
+                    elem_same_raw_in_problems[block_number]=1;
+                }else{
+                    std::list<int>::iterator it = index_to_replace[block_number].begin();
+                    std::advance(it, rows_in_problems[block_number]*elem_same_raw_in_problems[block_number]);
+                    
+                    index_to_replace[block_number].insert(it,i);
+                    elem_same_raw_in_problems[block_number]++;
+                }
+                
+                
+                continue;
+            }
+            
+            assert(beginning_of_blocks[block_number]*WARP_SIZE+warp_ex[block_number]*WARP_SIZE+data_in_warp_slot[block_number][warp_ex[block_number]]<beginning_of_blocks[block_number+1]*WARP_SIZE);
+            //std::cout<<"\nAdded in next warp because same row ("<<last_row<<") col: "<<y[i]<<" val_f: "<<val_f[i]<<" position: "<<start+warp_ex*WARP_SIZE+data_in_warp_slot[warp_ex];
+            //std::lock_guard<std::mutex> lock{mu};
+            processedX[beginning_of_blocks[block_number]*WARP_SIZE+warp_ex[block_number]*WARP_SIZE+data_in_warp_slot[block_number][warp_ex[block_number]]]=x[i];
+            processedY[beginning_of_blocks[block_number]*WARP_SIZE+warp_ex[block_number]*WARP_SIZE+data_in_warp_slot[block_number][warp_ex[block_number]]]=y[i];
+            processedVal[beginning_of_blocks[block_number]*WARP_SIZE+warp_ex[block_number]*WARP_SIZE+data_in_warp_slot[block_number][warp_ex[block_number]]]=val_f[i];
+            //std::lock_guard<std::mutex> unlock{mu};
+            
+            data_in_warp_slot[block_number][warp_ex[block_number]]++;
+            if (data_in_warp_slot[block_number][warp_ex[block_number]]==WARP_SIZE)
+                first_free_warp[block_number]++; 
+            warp_ex[block_number]++;
+            continue;
+        }
+        
+        
+        last_row[block_number]=x[i];
+        //std::cout<<"\nAdded in firstFreeWarp ("<<first_free_warp<<") row: "<<x[i]<<" col: "<<y[i]<<" val_f: "<<val_f[i]<<" position: "<<start+first_free_warp*WARP_SIZE+data_in_warp_slot[first_free_warp];
+        assert(beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]<beginning_of_blocks[block_number+1]*WARP_SIZE);
+        processedX[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=x[i];
+        processedY[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=y[i];
+        processedVal[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=val_f[i];
+
+        warp_ex[block_number]=first_free_warp[block_number]+1;
+
+        data_in_warp_slot[block_number][first_free_warp[block_number]]++;
+        if (data_in_warp_slot[block_number][first_free_warp[block_number]]==WARP_SIZE)
+            first_free_warp[block_number]++;        
+    }
+    col_blocks_map.clear();
+    
+    //place index with problems
+    std::vector<bool> decreasing(BlockNum,true);
+    //int new_pos[BlockNum],future_first_free_warp[BlockNum];
+
+    for (int block_number=0; block_number<BlockNum; block_number++){
+
+        for (std::list<int>::iterator i=index_to_replace[block_number].begin();i!=index_to_replace[block_number].end();i++){
+            //bounce between first_free_warp<=a<num_of_warp_data_block (incremental free slots or equal)
+            //assert(start+new_pos*WARP_SIZE+data_in_warp_slot[new_pos]<end);
+            
+            processedX[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=x[*i];
+            processedY[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=y[*i];
+            processedVal[beginning_of_blocks[block_number]*WARP_SIZE+first_free_warp[block_number]*WARP_SIZE+data_in_warp_slot[block_number][first_free_warp[block_number]]]=val_f[*i];
+
+            
+            data_in_warp_slot[block_number][first_free_warp[block_number]]++;
+            if (data_in_warp_slot[block_number][first_free_warp[block_number]]==WARP_SIZE){
+                first_free_warp[block_number]++;
+            }
+        }
+    
+
+        //map each row to a shared mem row and each column to a shared place to store pr
+        std::map<int, int> shared_global_row,shared_ppr_col;
+        int index_to_use_row=0,index_to_use_col=0;
+        for (int i=beginning_of_blocks[block_number]*WARP_SIZE;i<(beginning_of_blocks[block_number+1]*WARP_SIZE);i++){
+            if (index_to_use_row>=remaining_places_in_shared_mem){
+                //not enough shared mem so come back at warp beginning and restart mapping from 0, before this warp kernel will write on global mem
+                i-=i%WARP_SIZE-1;
+                index_to_use_row=0;
+                shared_global_row.clear();
+                //add to vector index for writes
+                
+                writings_of_blocks_list.push_back((i+1)/WARP_SIZE);
+                continue;
+            }
+
+            if (processedVal[i]==0){
+                //this is a place holder to get x32 positions per block, so change row and sharedRow to not collide with same warp
+                //find an intelligent value: not same as others in the same warp, close to them but not more than remaining_places_in_shared_mem
+                //but it can use a shared mem slot, can't find a solution quicly so keep it for now
+                int val=0,j;
+                for (j=i-i%WARP_SIZE;j< (i+(WARP_SIZE-i%WARP_SIZE)-1);j++){
+                    if ((processedX[j+1]-processedX[j])>1 && processedX[j]!=0){
+                        val=processedX[j]+1;
+                        break;
+                    }
+                }
+                if (val==0){
+                    val=processedX[j]+1;
+                }
+                processedX[i]=val%(block_size*BlockNum);
+                assert(i!=0);
+                processedY[i]=processedY[i-1];
+                
+            }
+
+            if (shared_global_row.find(processedX[i])==shared_global_row.end()){
+                shared_global_row[processedX[i]]=index_to_use_row;
+                index_to_use_row++;
+            }
+
+            processedXShared[i]=shared_global_row[processedX[i]];
+
+            if (shared_ppr_col.find(processedY[i])==shared_ppr_col.end()){
+                shared_ppr_col[processedY[i]]=index_to_use_col;
+                processedYMap[block_number*block_size + index_to_use_col]=processedY[i];
+                index_to_use_col++;
+                
+            }
+
+            processedYShared[i]=shared_ppr_col[processedY[i]];
+            
+        }
+        assert(block_number==(BlockNum-1)||index_to_use_col==block_size);
+        
+             
+        //assert(index_to_use_col==block_size);
+        shared_ppr_col.clear();
+        shared_global_row.clear();
+
+        last_write_length[block_number]=index_to_use_row;
+    }
+    
 
     //sort writings because with threads they are random O(NlogN)
     writings_of_blocks_list.sort();//should be already ordered
@@ -645,9 +948,10 @@ void PersonalizedPageRank::alloc_to_gpu_3() {
 void PersonalizedPageRank::alloc_to_gpu_4() {
 
     //malloc vectors first to have x32 addresses
-    cudaMalloc(&d_x, sizeof(int) * processedX.size());
-    cudaMalloc(&d_x_shared, sizeof(int) * processedXShared.size());
-    cudaMalloc(&d_y, sizeof(int) * processedY.size());
+    cudaMalloc(&d_x, sizeof(int) * processedX.size());//E + no op
+    cudaMalloc(&d_x_shared, sizeof(int) * processedXShared.size());//E + no op
+    cudaMalloc(&d_y, sizeof(int) * processedYShared.size());//E + no op
+    cudaMalloc(&d_y_map, sizeof(int) * processedY.size());//blockNum*block_size
     cudaMalloc(&d_val_f, sizeof(float) * processedVal.size());
     cudaMalloc(&d_pr_f, sizeof(float) * block_size*BlockNum); //alloc more to avoid if in accessing memory in kernel usid thread.x
     cudaMalloc(&d_newPr_f, sizeof(float) * block_size*BlockNum); //for this reason TRY TO HAVE V=block_size*BlockNum
@@ -661,14 +965,15 @@ void PersonalizedPageRank::alloc_to_gpu_4() {
 
     cudaMemcpy(d_x, &processedX[0], sizeof(int) * processedX.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_x_shared, &processedXShared[0], sizeof(int) * processedXShared.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, &processedY[0], sizeof(int) *  processedY.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, &processedYShared[0], sizeof(int) *  processedYShared.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y_map, &processedYMap[0], sizeof(int) *  processedYMap.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_val_f, &processedVal[0], sizeof(float) *  processedVal.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_beginning_of_blocks, &beginning_of_blocks[0], sizeof(int) *  beginning_of_blocks.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_writings_of_blocks, &writings_of_blocks[0], sizeof(int) *  writings_of_blocks.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_last_write_length, &last_write_length[0], sizeof(int) *  last_write_length.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_dangling, &dangling[0], sizeof(int) * dangling.size(), cudaMemcpyHostToDevice);
     cudaMemset(d_pr_f, 0.0, sizeof(float) * block_size*BlockNum);
-    cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);    
+    cudaMemset(d_newPr_f, 0.0, sizeof(float) * block_size*BlockNum);
     
 
 }
@@ -702,7 +1007,7 @@ void PersonalizedPageRank::alloc() {
         alloc_to_gpu_3();
         break;
     case 4:
-        pre_processing_coo_graph();
+        pre_processing_implementation_4();
         alloc_to_gpu_4();
     default:
         break;
@@ -915,7 +1220,7 @@ void PersonalizedPageRank::personalized_page_rank_4(int iter){
         gpu_vector_prod<<<BlockNum, block_size>>>(d_dangling, d_pr_f, d_dang_res, V);
 
         // Call the GPU computation.
-        gpu_calculate_ppr_2<<< BlockNum, block_size,SHARED_DIM>>>(d_y, d_x,d_x_shared, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks,d_writings_of_blocks,d_last_write_length);
+        gpu_calculate_ppr_4<<< BlockNum, block_size,SHARED_DIM>>>(d_y,d_y_map, d_x,d_x_shared, d_val_f, d_pr_f, d_newPr_f, d_beginning_of_blocks,d_writings_of_blocks,d_last_write_length);
 
         cudaDeviceSynchronize();
         cudaMemcpy(&dang_fact, d_dang_res, sizeof(float), cudaMemcpyDeviceToHost);
@@ -963,7 +1268,8 @@ void PersonalizedPageRank::execute(int iter) {
             personalized_page_rank_3(iter);
             break;
         case 4: //euclidean 1 every 2 cycles
-            personalized_page_rank_4(iter);
+            //test_pre_processing();
+            personalized_page_rank_4(iter);            
             break;
         case 5: //kernel to find top 20 pages and store their value in an array. So that you can copy from gpu only those values with their position (40*4Byte)
         //even the casting is done only on these 20 values
@@ -1052,7 +1358,7 @@ void PersonalizedPageRank::test_pre_processing(){
     std::cout<< "\ny:";
     for (i=0; i<y.size()&&i<40;i++){
         std::cout<< "  " << y[i];
-    }
+    }    
     std::cout<< "\nval:";
     for (i=0; i<val_f.size()&&i<40;i++){
         std::cout<< "  " << val_f[i];
@@ -1089,6 +1395,20 @@ void PersonalizedPageRank::test_pre_processing(){
         std::cout<< "  " << processedY[i];
         if (i%WARP_SIZE==0)
           std::cout<< "x";
+    }
+    if (implementation==4){
+        std::cout<< "\nprocessedYShared:";
+        for (i=from; i<to&&processedYShared.size();i++){
+            std::cout<< "  " << processedYShared[i];
+            if (i%WARP_SIZE==0)
+                std::cout<< "x";
+        }
+        std::cout<< "\nprocessedYMap:";
+        for (i=from; i<to&&processedYMap.size();i++){
+            std::cout<< "  " << processedYMap[i];
+            if (i%WARP_SIZE==0)
+                std::cout<< "x";
+        }
     }
     std::cout<< "\nprocessedVal:";
     for (i=from; i<to&&processedVal.size();i++){

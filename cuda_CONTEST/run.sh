@@ -11,5 +11,5 @@
 # Run PPR;
 #bin/b -d -c -n 1000 -b ppr -I 0 -i 1 -t 64;
 #bin/b -d -b ppr -i 1 -I 2 -s 0 -t 4 -g './data/small.mtx';
-bin/b -d -c -b ppr -I 2 -s 0 -t 64 -i 1 -g './data/California.mtx';
-#bin/b -d -b ppr -I 1 -s 0 -t 76 -g './data/wikipedia.mtx';
+bin/b -d -b ppr -I 4 -s 0 -t 64 -i 1 -g './data/California.mtx';
+#bin/b -d -c -b ppr -I 2 -s 0 -t 1024 -i 10 -g './data/wikipedia.mtx';

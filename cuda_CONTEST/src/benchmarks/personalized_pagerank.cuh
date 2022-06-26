@@ -167,6 +167,10 @@ class PersonalizedPageRank : public Benchmark {
     int remaining_places_in_shared_mem;
     //int num_of_warp_in_block;
 
+    // Implementation 4
+    std::vector<int> processedYShared;
+    std::vector<int> processedYMap;
+
     int personalization_vertex = 0;
     double convergence_threshold = DEFAULT_CONVERGENCE;
     double alpha = DEFAULT_ALPHA;
@@ -191,11 +195,15 @@ class PersonalizedPageRank : public Benchmark {
     // Implementation 3
     int *d_dangling;
     float* d_dang_res;
+
+    // Implementation 4
+    int *d_y_map;
     
 
     void initialize_graph();
     void converter();
     void pre_processing_coo_graph();
+    void pre_processing_implementation_4();
 
     void alloc_to_gpu_0();
     void alloc_to_gpu_1();
